@@ -154,11 +154,6 @@
       <ArrowLeft class="w-3.5 h-3.5" />
       <span>Back</span>
     </button>
-    <div class="flex items-center gap-2">
-      <span class="text-[10px] font-mono uppercase tracking-wider text-neutral-400 border border-[#2c2e39] px-1.5 py-0.5 rounded-[2px] bg-[#1a1b22]">
-        HOST CONSOLE
-      </span>
-    </div>
   </div>
 
   <!-- Content Grid -->
@@ -167,15 +162,15 @@
     <div class="lg:col-span-7 flex flex-col gap-3.5 bg-[#15161b] p-4 rounded-[4px] border border-[#262731] shadow-sm">
       <div>
         <div class="flex items-center justify-between mb-1">
-          <label for="instance-folder-input" class="text-[11px] font-mono uppercase tracking-wider text-neutral-400">
-            Source Directory
+          <label for="instance-folder-input" class="text-xs text-neutral-300 font-medium">
+            Folder to send
           </label>
           {#if instanceFolder}
             <button
               type="button"
               onclick={() => loadFileTree(instanceFolder)}
               disabled={isSessionStarted}
-              class="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer disabled:opacity-50 font-mono"
+              class="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
             >
               <RefreshCw class="w-3 h-3" />
               <span>Rescan</span>
@@ -188,7 +183,7 @@
             type="text"
             readonly
             value={instanceFolder}
-            placeholder="Select source folder..."
+            placeholder="Select folder..."
             class="flex-1 bg-[#111216] border border-[#292b36] text-neutral-200 text-xs rounded-[3px] px-3 py-1.5 focus:outline-none font-mono truncate"
           />
           <button
@@ -198,48 +193,47 @@
             class="px-3.5 py-1.5 rounded-[3px] bg-[#22242d] hover:bg-[#2b2d39] border border-[#353746] text-neutral-200 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50 active:translate-y-[1px]"
           >
             <Folder class="w-3.5 h-3.5 text-amber-500" />
-            <span>Select</span>
+            <span>Browse</span>
           </button>
         </div>
       </div>
 
       <!-- File Tree Component -->
       <div class="flex flex-col flex-1">
-        <div class="text-[11px] font-mono uppercase tracking-wider text-neutral-400 mb-1 flex items-center justify-between">
-          <span>Curate Sync Tree</span>
-          <span class="text-[10px] text-neutral-500 lowercase">saves & logs ignored by default</span>
+        <div class="text-xs text-neutral-300 font-medium mb-1 flex items-center justify-between">
+          <span>Files to sync</span>
+          <span class="text-[11px] text-neutral-500 font-normal">saves & logs unselected by default</span>
         </div>
 
         {#if isScanningTree}
           <div class="h-64 rounded-[3px] border border-[#262731] bg-[#111216] flex flex-col items-center justify-center gap-2 text-neutral-400">
             <RefreshCw class="w-4 h-4 animate-spin text-amber-400" />
-            <span class="text-xs font-mono">Indexing directory structure...</span>
+            <span class="text-xs">Scanning folder...</span>
           </div>
         {:else if fileTree}
           <FileTree rootNode={fileTree} onSelectionChange={handleSelectionChange} />
         {:else}
           <div class="h-64 rounded-[3px] border border-dashed border-[#282a35] bg-[#111216]/50 flex flex-col items-center justify-center gap-2 text-neutral-500 p-6 text-center">
             <Folder class="w-7 h-7 text-neutral-600" />
-            <p class="text-xs font-sans">Choose source directory above to inspect mods, configs, and assets.</p>
+            <p class="text-xs">Choose your folder above to view and select files.</p>
           </div>
         {/if}
       </div>
     </div>
 
-    <!-- Right Column: Code, Connection & Transfer Controls -->
+    <!-- Right Column: Code & Controls -->
     <div class="lg:col-span-5 flex flex-col gap-4 bg-[#15161b] p-4 rounded-[4px] border border-[#262731] shadow-sm">
       <div>
-        <h3 class="text-xs font-mono uppercase tracking-wider text-white font-semibold">Session & Host Controls</h3>
-        <p class="text-[11px] text-neutral-400 mt-0.5">
-          Share room code or direct IP with peer.
+        <h3 class="text-sm font-semibold text-white">Connection & Code</h3>
+        <p class="text-xs text-neutral-400 mt-0.5">
+          Share this code with your friend to connect.
         </p>
       </div>
 
       <!-- Code Box -->
       <div class="p-3.5 rounded-[3px] bg-[#111216] border border-[#262731] flex flex-col gap-2">
-        <label for="sender-code-input" class="text-[10px] font-mono uppercase tracking-wider text-neutral-400 flex items-center justify-between">
-          <span>Session Authentication</span>
-          <span class="text-neutral-300 font-mono">{networkMode === "direct" ? "DIRECT TCP" : "WEBRTC P2P"}</span>
+        <label for="sender-code-input" class="text-xs text-neutral-300 font-medium flex items-center justify-between">
+          <span>Code</span>
         </label>
 
         {#if !isSessionStarted}
@@ -248,7 +242,7 @@
               id="sender-code-input"
               type="text"
               bind:value={roomCode}
-              placeholder="Leave blank for automatic room code"
+              placeholder="Enter custom code or leave empty for random"
               class="w-full bg-[#171820] border border-[#2a2c37] text-white placeholder-neutral-600 text-xs font-mono rounded-[3px] px-2.5 py-1.5 focus:outline-none focus:border-amber-500"
             />
           </div>
@@ -263,29 +257,29 @@
             <button
               type="button"
               onclick={copyCode}
-              class="px-2 py-1 rounded-[2px] bg-[#22242d] hover:bg-[#2b2d39] text-neutral-200 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer border border-[#353746] active:translate-y-[1px]"
+              class="px-2.5 py-1 rounded-[2px] bg-[#22242d] hover:bg-[#2b2d39] text-neutral-200 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer border border-[#353746] active:translate-y-[1px]"
             >
               {#if copied}
                 <Check class="w-3 h-3 text-emerald-400" />
-                <span class="text-emerald-400">COPIED</span>
+                <span class="text-emerald-400">Copied</span>
               {:else}
                 <Copy class="w-3 h-3 text-neutral-400" />
-                <span>COPY</span>
+                <span>Copy</span>
               {/if}
             </button>
           </div>
 
           {#if networkMode === "direct" && directAddresses.length > 0}
-            <div class="text-[11px] text-neutral-400 font-mono mt-1">
-              DIRECT IP: <span class="text-neutral-200 select-all font-semibold">{directAddresses[0]}</span>
+            <div class="text-xs text-neutral-400 mt-1">
+              Direct IP: <span class="text-neutral-200 select-all font-mono font-medium">{directAddresses[0]}</span>
             </div>
           {/if}
         {/if}
 
         {#if absoluteSyncFolders.length > 0}
-          <div class="p-2 rounded-[2px] bg-[#211a0c] border border-[#483713] text-amber-300 text-[11px] font-mono flex items-center gap-2">
+          <div class="p-2 rounded-[2px] bg-[#211a0c] border border-[#483713] text-amber-300 text-xs flex items-center gap-2">
             <CopyCheck class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-            <span>1:1 Mirror: <strong class="text-amber-200">{absoluteSyncFolders.join(", ")}</strong></span>
+            <span>Mirroring: <strong class="text-amber-200">{absoluteSyncFolders.join(", ")}</strong> (extra files in these folders will be deleted on peer)</span>
           </div>
         {/if}
       </div>
@@ -294,17 +288,17 @@
       {#if isSessionStarted}
         <div class="p-3.5 rounded-[3px] bg-[#111216] border border-[#262731] flex flex-col gap-2.5">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-mono text-[11px] uppercase tracking-wider font-semibold text-neutral-300 flex items-center gap-1.5">
+            <span class="font-medium text-neutral-300 flex items-center gap-1.5">
               {#if isSyncing}
                 <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                <span>TRANSFERRING FILES</span>
+                <span>Syncing files...</span>
               {:else if isComplete}
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-400" />
-                <span class="text-emerald-400">SYNC COMPLETE</span>
+                <span class="text-emerald-400">Sync complete</span>
               {:else if isPaused}
-                <span class="text-amber-400">PAUSED</span>
+                <span class="text-amber-400">Paused</span>
               {:else}
-                <span>{currentStats.status.toUpperCase()}</span>
+                <span>{currentStats.status}</span>
               {/if}
             </span>
 
@@ -315,7 +309,7 @@
             </span>
           </div>
 
-          <!-- Progress Bar (Crisp solid color) -->
+          <!-- Progress Bar -->
           <div class="w-full bg-[#1c1d25] h-2 rounded-[2px] overflow-hidden">
             <div
               class="h-full transition-all duration-200 {isComplete ? 'bg-emerald-500' : 'bg-amber-500'}"
@@ -323,7 +317,7 @@
             ></div>
           </div>
 
-          <div class="flex items-center justify-between text-[10px] font-mono text-neutral-400 tabular-nums">
+          <div class="flex items-center justify-between text-xs text-neutral-400 font-mono tabular-nums">
             <span>{Math.round(currentStats.percent || 0)}%</span>
             {#if currentStats.totalBytes > 0}
               <span>{formatBytes(currentStats.transferredBytes || 0)} / {formatBytes(currentStats.totalBytes)}</span>
@@ -331,20 +325,20 @@
           </div>
 
           <!-- Message & Current File -->
-          <div class="text-[11px] text-neutral-300 font-mono truncate bg-[#161720] px-2.5 py-1 rounded-[2px] border border-[#242531]">
-            {currentStats.message || "Waiting for peer connection..."}
+          <div class="text-xs text-neutral-300 truncate bg-[#161720] px-2.5 py-1 rounded-[2px] border border-[#242531]">
+            {currentStats.message || "Waiting for friend to connect..."}
           </div>
 
           {#if currentStats.currentFile && !isComplete}
-            <div class="text-[10px] text-neutral-400 font-mono truncate">
-              FILE: <span class="text-neutral-200">{currentStats.currentFile}</span>
+            <div class="text-xs text-neutral-400 font-mono truncate">
+              {currentStats.currentFile}
             </div>
           {/if}
 
           {#if currentStats.prunedFiles > 0}
-            <div class="text-[10px] text-neutral-400 font-mono flex items-center gap-1.5 tabular-nums">
+            <div class="text-xs text-neutral-400 flex items-center gap-1.5 tabular-nums">
               <Trash2 class="w-3 h-3 text-neutral-500" />
-              <span>Pruned {currentStats.prunedFiles} unlisted files on peer</span>
+              <span>Deleted {currentStats.prunedFiles} extra file(s) on peer</span>
             </div>
           {/if}
         </div>
@@ -352,7 +346,7 @@
 
       <!-- Errors -->
       {#if localError}
-        <div class="p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2 font-mono">
+        <div class="p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2">
           <AlertCircle class="w-4 h-4 flex-shrink-0 text-rose-400" />
           <span>{localError}</span>
         </div>
@@ -368,7 +362,7 @@
             class="w-full py-2.5 rounded-[3px] bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black font-semibold text-xs border border-amber-500 transition-colors flex items-center justify-center gap-2 cursor-pointer active:translate-y-[1px] shadow-sm"
           >
             <Play class="w-3.5 h-3.5 text-black" />
-            <span>Start Session & Host</span>
+            <span>Start sync</span>
           </button>
         {:else if !isComplete && !isError}
           <div class="grid grid-cols-2 gap-2">
@@ -405,7 +399,7 @@
             class="w-full py-2 rounded-[3px] {isComplete ? 'bg-emerald-600 hover:bg-emerald-500 border border-emerald-500' : 'bg-[#22242d] hover:bg-[#2b2d39] border border-[#353746]'} text-white font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:translate-y-[1px]"
           >
             <X class="w-3.5 h-3.5" />
-            <span>Close Console</span>
+            <span>Close</span>
           </button>
         {/if}
       </div>

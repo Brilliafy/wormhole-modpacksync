@@ -77,13 +77,13 @@
         <CheckCircle2 class="w-6 h-6" />
       </div>
       <span class="text-2xl font-mono font-bold text-white tabular-nums">100%</span>
-      <span class="text-[10px] font-mono uppercase tracking-wider text-emerald-400 mt-0.5">COMPLETED</span>
+      <span class="text-xs text-emerald-400 font-medium mt-0.5">Done!</span>
     {:else if isError}
       <div class="w-10 h-10 rounded-[3px] bg-[#2a1314] border border-[#521c1f] text-rose-400 flex items-center justify-center mb-1.5">
         <AlertCircle class="w-6 h-6" />
       </div>
-      <span class="text-lg font-mono font-bold text-rose-400">FAILED</span>
-      <span class="text-[10px] font-mono text-rose-400/80 mt-0.5">CHECK LOGS</span>
+      <span class="text-lg font-bold text-rose-400">Failed</span>
+      <span class="text-xs text-rose-400/80 mt-0.5">Check error</span>
     {:else}
       <!-- Tabular Percentage -->
       <div class="text-3xl font-bold tracking-tight text-white font-mono tabular-nums">
@@ -97,7 +97,7 @@
           <span>{speedFormatted}</span>
         </div>
       {:else}
-        <div class="mt-2 text-[10px] font-mono text-neutral-400 uppercase tracking-wider">
+        <div class="mt-2 text-xs text-neutral-400">
           {status}
         </div>
       {/if}

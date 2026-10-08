@@ -76,12 +76,11 @@
   }
 </script>
 
-<div class="max-w-lg mx-auto px-5 py-8 flex flex-col items-center justify-center min-h-[calc(100vh-65px)]">
+<div class="max-w-md mx-auto px-5 py-8 flex flex-col items-center justify-center min-h-[calc(100vh-65px)]">
   {#if !isLocked}
-    <!-- Step 1 & 2: Setup Form -->
+    <!-- Setup Form -->
     <div class="w-full bg-[#15161b] rounded-[4px] border border-[#262731] p-6 shadow-sm">
-      <!-- Top header -->
-      <div class="flex items-center justify-between mb-5 pb-3 border-b border-[#23242e]">
+      <div class="flex items-center justify-between mb-4 pb-2 border-b border-[#23242e]">
         <button
           type="button"
           onclick={onClose}
@@ -90,20 +89,17 @@
           <ArrowLeft class="w-3.5 h-3.5" />
           <span>Back</span>
         </button>
-        <span class="text-[10px] font-mono uppercase tracking-wider text-neutral-400 border border-[#2c2e39] px-1.5 py-0.5 rounded-[2px] bg-[#1a1b22]">
-          CLIENT SETUP
-        </span>
       </div>
 
-      <h2 class="text-base font-semibold text-white mb-1">Receive Files</h2>
+      <h2 class="text-base font-semibold text-white mb-1">Receive files</h2>
       <p class="text-neutral-400 text-xs mb-5 leading-relaxed">
-        Specify destination folder and enter host session code or direct IP:Port to pull differential updates.
+        Choose your folder and enter the code your friend gave you.
       </p>
 
       <!-- Target Folder Selection -->
       <div class="mb-4">
-        <label for="target-folder-input" class="block text-[11px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
-          Destination Folder
+        <label for="target-folder-input" class="block text-xs text-neutral-300 font-medium mb-1">
+          Folder to sync into
         </label>
         <div class="flex gap-2">
           <input
@@ -111,7 +107,7 @@
             type="text"
             readonly
             value={targetFolder}
-            placeholder="Select target folder on disk..."
+            placeholder="Select folder..."
             class="flex-1 bg-[#111216] border border-[#292b36] text-neutral-200 text-xs rounded-[3px] px-3 py-2 focus:outline-none font-mono truncate"
           />
           <button
@@ -127,8 +123,8 @@
 
       <!-- Code Entry -->
       <div class="mb-5">
-        <label for="room-code-input" class="block text-[11px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
-          Host Code {networkMode === "direct" ? "or Direct IP:Port" : ""}
+        <label for="room-code-input" class="block text-xs text-neutral-300 font-medium mb-1">
+          {networkMode === "direct" ? "Direct address (IP:Port)" : "Friend's code"}
         </label>
         <div class="relative">
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -146,7 +142,7 @@
 
       <!-- Errors -->
       {#if localError}
-        <div class="mb-4 p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2 font-mono">
+        <div class="mb-4 p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2">
           <AlertCircle class="w-4 h-4 flex-shrink-0 text-rose-400" />
           <span>{localError}</span>
         </div>
@@ -156,10 +152,10 @@
       <button
         type="button"
         onclick={handleStartReceive}
-        class="w-full py-2.5 rounded-[3px] bg-sky-600 hover:bg-sky-500 active:translate-y-[1px] border border-sky-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+        class="w-full py-2.5 rounded-[3px] bg-sky-600 hover:bg-sky-500 active:translate-y-[1px] border border-sky-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-sm"
       >
         <Download class="w-3.5 h-3.5" />
-        <span>Connect & Start Sync</span>
+        <span>Connect and sync</span>
       </button>
     </div>
   {:else}
@@ -185,45 +181,45 @@
 
         <!-- Telemetry Readout -->
         <div class="text-center w-full mb-5 space-y-2">
-          <h3 class="text-xs font-mono uppercase tracking-wider font-semibold text-white flex items-center justify-center gap-2">
+          <h3 class="text-sm font-semibold text-white flex items-center justify-center gap-2">
             {#if isComplete}
               <CheckCircle2 class="w-4 h-4 text-emerald-400" />
-              <span class="text-emerald-400">SYNC COMPLETE</span>
+              <span class="text-emerald-400">Sync complete</span>
             {:else if isError}
               <AlertCircle class="w-4 h-4 text-rose-400" />
-              <span class="text-rose-400">TRANSFER FAILED</span>
+              <span class="text-rose-400">Sync failed</span>
             {:else}
-              <span>TRANSFERRING FILES</span>
+              <span>Syncing files...</span>
             {/if}
           </h3>
 
-          <p class="text-[11px] text-neutral-300 font-mono truncate px-3 py-1 bg-[#111216] rounded-[2px] border border-[#23242e]">
-            {currentStats.message || "Connecting to host..."}
+          <p class="text-xs text-neutral-300 font-mono truncate px-3 py-1 bg-[#111216] rounded-[2px] border border-[#23242e]">
+            {currentStats.message || "Connecting..."}
           </p>
 
           {#if currentStats.currentFile && !isComplete}
-            <div class="text-[10px] text-neutral-400 font-mono truncate px-1">
-              FILE: <span class="text-neutral-200">{currentStats.currentFile}</span>
+            <div class="text-xs text-neutral-400 font-mono truncate px-1">
+              {currentStats.currentFile}
             </div>
           {/if}
 
           {#if currentStats.totalBytes > 0}
-            <div class="text-[10px] text-neutral-400 font-mono tabular-nums">
+            <div class="text-xs text-neutral-400 font-mono tabular-nums">
               {formatBytes(currentStats.transferredBytes || 0)} / {formatBytes(currentStats.totalBytes)}
             </div>
           {/if}
 
           {#if currentStats.mirroredFolders && currentStats.mirroredFolders.length > 0}
-            <div class="text-[10px] text-amber-300 font-mono flex items-center justify-center gap-1.5 px-2 py-0.5 bg-[#211a0c] rounded-[2px] border border-[#483713]">
-              <CopyCheck class="w-3 h-3 text-amber-400" />
-              <span>1:1 Mirror: <strong>{currentStats.mirroredFolders.join(", ")}</strong></span>
+            <div class="text-xs text-amber-300 flex items-center justify-center gap-1.5 px-2 py-0.5 bg-[#211a0c] rounded-[2px] border border-[#483713]">
+              <CopyCheck class="w-3.5 h-3.5 text-amber-400" />
+              <span>Mirroring: <strong>{currentStats.mirroredFolders.join(", ")}</strong></span>
             </div>
           {/if}
 
           {#if currentStats.prunedFiles > 0}
-            <div class="text-[10px] text-neutral-400 font-mono flex items-center justify-center gap-1.5 tabular-nums">
+            <div class="text-xs text-neutral-400 flex items-center justify-center gap-1.5 tabular-nums">
               <Trash2 class="w-3 h-3 text-neutral-500" />
-              <span>Pruned {currentStats.prunedFiles} unlisted remote file{currentStats.prunedFiles === 1 ? '' : 's'}</span>
+              <span>Deleted {currentStats.prunedFiles} extra file{currentStats.prunedFiles === 1 ? '' : 's'}</span>
             </div>
           {/if}
         </div>
@@ -236,7 +232,7 @@
             class="w-full py-2 rounded-[3px] {isComplete ? 'bg-emerald-600 hover:bg-emerald-500 border border-emerald-500' : 'bg-[#22242d] hover:bg-[#2b2d39] border border-[#353746]'} text-white font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:translate-y-[1px]"
           >
             <X class="w-3.5 h-3.5" />
-            <span>Close Console</span>
+            <span>Close</span>
           </button>
         {/if}
       </div>
