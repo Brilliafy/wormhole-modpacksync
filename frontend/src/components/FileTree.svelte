@@ -227,12 +227,12 @@
     </div>
   </div>
 
-  <!-- Absolute Sync Legend Banner -->
+  <!-- Mirror Notice Banner -->
   {#if activeMirroredFolders.length > 0}
-    <div class="px-3 py-1 bg-[#1c1810] border-b border-[#3d3119] flex items-center justify-between text-[11px] text-amber-300/90 font-mono">
+    <div class="px-3 py-1 bg-[#1c1810] border-b border-[#3d3119] flex items-center justify-between text-xs text-amber-300/90">
       <span class="flex items-center gap-1.5">
-        <CopyCheck class="w-3 h-3 text-amber-400 flex-shrink-0" />
-        <span>1:1 Mirror active on: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (remote extras will be pruned)</span>
+        <CopyCheck class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+        <span>Mirroring enabled for: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (extra files in these folders will be deleted)</span>
       </span>
     </div>
   {/if}
@@ -246,17 +246,17 @@
         {/if}
       {/each}
     {:else}
-      <div class="p-6 text-center text-neutral-500 font-sans text-xs">No files detected in directory</div>
+      <div class="p-6 text-center text-neutral-500 font-sans text-xs">No files found in directory</div>
     {/if}
   </div>
 
   <!-- Footer Stats Bar -->
-  <div class="px-3 py-2 bg-[#17181f] border-t border-[#262731] flex items-center justify-between text-[11px] font-mono tabular-nums">
-    <div class="text-neutral-400">
-      <span class="text-neutral-500">SELECTED:</span> <strong class="text-amber-400 font-semibold">{selectionStats.count} files</strong>
+  <div class="px-3 py-1.5 bg-[#17181f] border-t border-[#262731] flex items-center justify-between text-xs text-neutral-400">
+    <div>
+      <strong class="text-amber-400 font-medium">{selectionStats.count}</strong> files selected
     </div>
-    <div class="text-neutral-400">
-      <span class="text-neutral-500">SIZE:</span> <strong class="text-neutral-200 font-semibold">{formatBytes(selectionStats.bytes)}</strong>
+    <div class="font-mono tabular-nums text-neutral-300">
+      {formatBytes(selectionStats.bytes)}
     </div>
   </div>
 </div>
@@ -310,16 +310,16 @@
         {/if}
       </button>
 
-      <!-- 1:1 Mirror Toggle Badge (Only for folders with relPath != "") -->
+      <!-- Mirror Toggle Badge (Only for folders with relPath != "") -->
       {#if node.isDir && node.relPath}
         <button
           type="button"
           onclick={(e) => { e.stopPropagation(); toggleAbsoluteSync(node.relPath); }}
-          class="px-1.5 py-0.2 rounded-[2px] text-[10px] font-mono tracking-tight flex items-center gap-1 transition-colors cursor-pointer {absoluteSyncMap[node.relPath] ? 'bg-[#291f0c] text-amber-300 border border-[#5c4415]' : 'bg-[#181920] text-neutral-500 hover:text-neutral-300 border border-[#2b2d38]'}"
-          title="Toggle 1:1 Mirror: unlisted files in friend's remote folder will be pruned."
+          class="px-1.5 py-0.2 rounded-[2px] text-xs flex items-center gap-1 transition-colors cursor-pointer {absoluteSyncMap[node.relPath] ? 'bg-[#291f0c] text-amber-300 border border-[#5c4415]' : 'bg-[#181920] text-neutral-500 hover:text-neutral-300 border border-[#2b2d38]'}"
+          title="Mirror this folder: deletes any extra files on your friend's side that you don't have."
         >
-          <CopyCheck class="w-2.5 h-2.5 {absoluteSyncMap[node.relPath] ? 'text-amber-400' : 'text-neutral-500'}" />
-          <span>{absoluteSyncMap[node.relPath] ? '1:1 MIRROR' : 'MIRROR'}</span>
+          <CopyCheck class="w-3 h-3 {absoluteSyncMap[node.relPath] ? 'text-amber-400' : 'text-neutral-500'}" />
+          <span>{absoluteSyncMap[node.relPath] ? 'Mirror: on' : 'Mirror'}</span>
         </button>
       {/if}
 
