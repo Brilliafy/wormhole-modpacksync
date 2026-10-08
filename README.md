@@ -11,9 +11,11 @@ A modern, high-performance, cross-platform delta synchronizer built with **Go**,
 - **Two Network Modes**:
   1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels punched through NAT using STUN servers. Share a simple 6-digit code with your friend.
   2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
+- **Absolute Sync (Folder Mirroring & Pruning)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror your folder 1:1. Any extra or obsolete files on your friend's side within those specific folders are automatically pruned, while non-mirrored directories (such as individual files like `zeustemple.schematic` in the root) remain untouched without deleting other root files.
 - **Interactive File Tree & Modpack Presets**:
   - Filter and check/uncheck files and directories to sync.
-  - Built-in **Modpack Preset** that enables `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `kubejs/`, `scripts/` while safeguarding personal player files (`saves/`, `logs/`, `screenshots/`, `options.txt`).
+  - Per-folder **Mirror (Prune Extras)** toggle button with visual status indicators.
+  - Built-in **Modpack Preset** that automatically enables `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `kubejs/`, `scripts/` (with Absolute Sync on `mods/` and `config/`) while safeguarding personal player files (`saves/`, `logs/`, `screenshots/`, `options.txt`).
 - **Intuitive UI Flow**:
   - **Receive Files**: Pick destination directory &rarr; Enter code &rarr; Form locks into a glowing circular progress ring with centered telemetry &rarr; Completion chime plays &rarr; Close button.
   - **Send Files**: Choose instance &rarr; Customize file tree &rarr; Share code/address &rarr; Start, Pause, Resume, Stop &rarr; Live progress bar &amp; speed indicator (MB/s).

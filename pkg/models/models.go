@@ -16,28 +16,31 @@ type FileInfo struct {
 
 // FileTreeNode represents a node in the hierarchical file tree for sender UI
 type FileTreeNode struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	RelPath  string          `json:"relPath"`
-	IsDir    bool            `json:"isDir"`
-	Size     int64           `json:"size"`
-	Checked  bool            `json:"checked"`
-	Children []*FileTreeNode `json:"children,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	RelPath      string          `json:"relPath"`
+	IsDir        bool            `json:"isDir"`
+	Size         int64           `json:"size"`
+	Checked      bool            `json:"checked"`
+	AbsoluteSync bool            `json:"absoluteSync"` // If true on a directory, extra files on receiver will be pruned
+	Children     []*FileTreeNode `json:"children,omitempty"`
 }
 
 // SyncManifest represents the collection of files selected for synchronization
 type SyncManifest struct {
-	InstanceName string     `json:"instanceName"`
-	CreatedAt    int64      `json:"createdAt"`
-	Files        []FileInfo `json:"files"`
-	TotalFiles   int        `json:"totalFiles"`
-	TotalBytes   int64      `json:"totalBytes"`
+	InstanceName        string     `json:"instanceName"`
+	CreatedAt           int64      `json:"createdAt"`
+	Files               []FileInfo `json:"files"`
+	TotalFiles          int        `json:"totalFiles"`
+	TotalBytes          int64      `json:"totalBytes"`
+	AbsoluteSyncFolders []string   `json:"absoluteSyncFolders,omitempty"` // Folders that must strictly mirror sender (delete extras)
 }
 
 // DeltaPlan represents the delta computation result on the receiver
 type DeltaPlan struct {
 	FilesToSync   []FileInfo `json:"filesToSync"`
 	FilesUpToDate []FileInfo `json:"filesUpToDate"`
+	FilesToDelete []string   `json:"filesToDelete"` // Extra files in absolute-sync folders that need deletion
 	TotalFiles    int        `json:"totalFiles"`
 	SyncFiles     int        `json:"syncFiles"`
 	TotalBytes    int64      `json:"totalBytes"`
@@ -47,30 +50,33 @@ type DeltaPlan struct {
 
 // SyncStats provides live telemetry to the UI for both sender and receiver
 type SyncStats struct {
-	Status           string  `json:"status"` // "idle", "scanning", "waiting", "connecting", "analyzing", "syncing", "paused", "finished", "stopped", "error"
-	Role             string  `json:"role"`   // "sender" or "receiver"
-	Mode             string  `json:"mode"`   // "direct" or "webrtc"
-	TotalFiles       int     `json:"totalFiles"`
-	CompletedFiles   int     `json:"completedFiles"`
-	TotalBytes       int64   `json:"totalBytes"`
-	TransferredBytes int64   `json:"transferredBytes"`
-	SpeedBytesPerSec float64 `json:"speedBytesPerSec"`
-	SpeedFormatted   string  `json:"speedFormatted"`
-	Percent          float64 `json:"percent"`
-	CurrentFile      string  `json:"currentFile"`
-	Message          string  `json:"message"`
-	ErrorMessage     string  `json:"errorMessage"`
-	Code             string  `json:"code"`
-	PeerAddress      string  `json:"peerAddress"`
+	Status           string   `json:"status"` // "idle", "scanning", "waiting", "connecting", "analyzing", "syncing", "paused", "finished", "stopped", "error"
+	Role             string   `json:"role"`   // "sender" or "receiver"
+	Mode             string   `json:"mode"`   // "direct" or "webrtc"
+	TotalFiles       int      `json:"totalFiles"`
+	CompletedFiles   int      `json:"completedFiles"`
+	PrunedFiles      int      `json:"prunedFiles"`
+	TotalBytes       int64    `json:"totalBytes"`
+	TransferredBytes int64    `json:"transferredBytes"`
+	SpeedBytesPerSec float64  `json:"speedBytesPerSec"`
+	SpeedFormatted   string   `json:"speedFormatted"`
+	Percent          float64  `json:"percent"`
+	CurrentFile      string   `json:"currentFile"`
+	Message          string   `json:"message"`
+	ErrorMessage     string   `json:"errorMessage"`
+	Code             string   `json:"code"`
+	PeerAddress      string   `json:"peerAddress"`
+	MirroredFolders  []string `json:"mirroredFolders,omitempty"`
 }
 
 // SenderInitResult returns the code and detected network addresses for sender
 type SenderInitResult struct {
-	Code            string   `json:"code"`
-	DirectAddresses []string `json:"directAddresses"`
-	TailscaleIP     string   `json:"tailscaleIP"`
-	SelectedFiles   int      `json:"selectedFiles"`
-	TotalBytes      int64    `json:"totalBytes"`
+	Code                string   `json:"code"`
+	DirectAddresses     []string `json:"directAddresses"`
+	TailscaleIP         string   `json:"tailscaleIP"`
+	SelectedFiles       int      `json:"selectedFiles"`
+	TotalBytes          int64    `json:"totalBytes"`
+	AbsoluteSyncFolders []string `json:"absoluteSyncFolders,omitempty"`
 }
 
 // NetworkInfo provides detected local network and Tailscale addresses

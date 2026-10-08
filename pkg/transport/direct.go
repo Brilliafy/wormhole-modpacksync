@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -448,6 +449,26 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		neededPaths[i] = f.RelPath
 	}
 
+	// Safely prune extra/obsolete files inside absolute-sync folders
+	prunedCount := 0
+	if len(plan.FilesToDelete) > 0 {
+		for _, relDel := range plan.FilesToDelete {
+			allowed := false
+			for _, absFolder := range manifest.AbsoluteSyncFolders {
+				cleanAbs := filepath.ToSlash(filepath.Clean(absFolder))
+				if cleanAbs != "" && cleanAbs != "." && (relDel == cleanAbs || strings.HasPrefix(relDel, cleanAbs+"/")) {
+					allowed = true
+					break
+				}
+			}
+			if allowed {
+				fullDelPath := filepath.Join(r.destDir, filepath.FromSlash(relDel))
+				_ = os.Remove(fullDelPath)
+				prunedCount++
+			}
+		}
+	}
+
 	// Send delta request
 	if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgRequestDelta, DeltaReq: neededPaths}); err != nil {
 		return err
@@ -457,6 +478,10 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		// All files already present and identical!
 		completeMsg, _ := ReadFramedJSON(conn)
 		_ = completeMsg
+		finishMsg := fmt.Sprintf("All %d files already match! Zero bytes downloaded (Saved %s).", manifest.TotalFiles, models.FormatBytes(plan.SavedBytes))
+		if prunedCount > 0 {
+			finishMsg = fmt.Sprintf("Pruned %d obsolete files in mirrored folders. All %d files up-to-date! (Saved %s)", prunedCount, manifest.TotalFiles, models.FormatBytes(plan.SavedBytes))
+		}
 		r.updateStatus(models.SyncStats{
 			Status:           "finished",
 			Role:             "receiver",
@@ -464,10 +489,12 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 			PeerAddress:      peerAddr,
 			TotalFiles:       manifest.TotalFiles,
 			CompletedFiles:   manifest.TotalFiles,
+			PrunedFiles:      prunedCount,
 			TotalBytes:       manifest.TotalBytes,
 			TransferredBytes: 0,
 			Percent:          100,
-			Message:          fmt.Sprintf("All %d files already match! Zero bytes downloaded (Saved %s).", manifest.TotalFiles, models.FormatBytes(plan.SavedBytes)),
+			Message:          finishMsg,
+			MirroredFolders:  manifest.AbsoluteSyncFolders,
 		})
 		return nil
 	}
@@ -550,6 +577,10 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 	}
 
 	// Final complete message
+	finishMsg := fmt.Sprintf("Sync complete! Transferred %s (saved %s).", models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes))
+	if prunedCount > 0 {
+		finishMsg = fmt.Sprintf("Sync complete! Pruned %d obsolete files in mirrored folders. Transferred %s (saved %s).", prunedCount, models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes))
+	}
 	r.updateStatus(models.SyncStats{
 		Status:           "finished",
 		Role:             "receiver",
@@ -557,10 +588,12 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		PeerAddress:      peerAddr,
 		TotalFiles:       totalNeededFiles,
 		CompletedFiles:   totalNeededFiles,
+		PrunedFiles:      prunedCount,
 		TotalBytes:       totalDeltaBytes,
 		TransferredBytes: transferredBytes,
 		Percent:          100,
-		Message:          fmt.Sprintf("Sync complete! Transferred %s (saved %s).", models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes)),
+		Message:          finishMsg,
+		MirroredFolders:  manifest.AbsoluteSyncFolders,
 	})
 
 	return nil

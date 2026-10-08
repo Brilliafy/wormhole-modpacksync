@@ -108,38 +108,41 @@ func (sm *SessionManager) GetStats() models.SyncStats {
 }
 
 // StartSenderSession prepares the sender, scans files, and launches direct or webrtc listener
-func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []string, mode string, customCode string) (*models.SenderInitResult, error) {
+func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []string, absoluteSyncFolders []string, mode string, customCode string) (*models.SenderInitResult, error) {
 	sm.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sm.cancelFunc = cancel
 
 	sm.UpdateStats(models.SyncStats{
-		Status:  "scanning",
-		Role:    "sender",
-		Mode:    mode,
-		Message: "Scanning instance directory and hashing selected files...",
+		Status:          "scanning",
+		Role:            "sender",
+		Mode:            mode,
+		Message:         "Scanning instance directory and hashing selected files...",
+		MirroredFolders: absoluteSyncFolders,
 	})
 
 	// Scan and hash files
-	manifest, err := scanner.ScanSelectedFiles(rootDir, selectedPaths, func(done, total int, current string) {
+	manifest, err := scanner.ScanSelectedFiles(rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
 		sm.UpdateStats(models.SyncStats{
-			Status:         "scanning",
-			Role:           "sender",
-			Mode:           mode,
-			TotalFiles:     total,
-			CompletedFiles: done,
-			CurrentFile:    current,
-			Percent:        float64(done) / float64(total) * 100,
-			Message:        fmt.Sprintf("Hashing files: [%d/%d] %s", done, total, current),
+			Status:          "scanning",
+			Role:            "sender",
+			Mode:            mode,
+			TotalFiles:      total,
+			CompletedFiles:  done,
+			CurrentFile:     current,
+			Percent:         float64(done) / float64(total) * 100,
+			Message:         fmt.Sprintf("Hashing files: [%d/%d] %s", done, total, current),
+			MirroredFolders: absoluteSyncFolders,
 		})
 	})
 	if err != nil {
 		sm.UpdateStats(models.SyncStats{
-			Status:       "error",
-			Role:         "sender",
-			Mode:         mode,
-			ErrorMessage: fmt.Sprintf("Failed to scan directory: %v", err),
+			Status:          "error",
+			Role:            "sender",
+			Mode:            mode,
+			ErrorMessage:    fmt.Sprintf("Failed to scan directory: %v", err),
+			MirroredFolders: absoluteSyncFolders,
 		})
 		return nil, err
 	}
@@ -159,17 +162,19 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	}
 
 	result := &models.SenderInitResult{
-		Code:            code,
-		DirectAddresses: directAddrs,
-		TailscaleIP:     netInfo.TailscaleIP,
-		SelectedFiles:   manifest.TotalFiles,
-		TotalBytes:      manifest.TotalBytes,
+		Code:                code,
+		DirectAddresses:     directAddrs,
+		TailscaleIP:         netInfo.TailscaleIP,
+		SelectedFiles:       manifest.TotalFiles,
+		TotalBytes:          manifest.TotalBytes,
+		AbsoluteSyncFolders: manifest.AbsoluteSyncFolders,
 	}
 
 	if mode == "direct" || mode == "tailscale" {
 		// Launch Direct TCP Server
 		sm.directSender = NewDirectSender(rootDir, manifest, netInfo.DefaultPort, func(stats models.SyncStats) {
 			stats.Code = code
+			stats.MirroredFolders = manifest.AbsoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
 
@@ -177,10 +182,11 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			err := sm.directSender.Start(ctx)
 			if err != nil && ctx.Err() == nil {
 				sm.UpdateStats(models.SyncStats{
-					Status:       "error",
-					Role:         "sender",
-					Mode:         "direct",
-					ErrorMessage: err.Error(),
+					Status:          "error",
+					Role:            "sender",
+					Mode:            "direct",
+					ErrorMessage:    err.Error(),
+					MirroredFolders: manifest.AbsoluteSyncFolders,
 				})
 			}
 		}()
@@ -188,6 +194,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 		// Launch WebRTC Hole Punch Session
 		sm.webrtcSender = NewWebRTCSender(rootDir, manifest, func(stats models.SyncStats) {
 			stats.Code = code
+			stats.MirroredFolders = manifest.AbsoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
 

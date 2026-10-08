@@ -22,15 +22,28 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 
 	modContent := []byte("mod file content here - test bytes 123456789")
 	configContent := []byte(`{"enabled": true, "key": "value"}`)
+	schematicContent := []byte("schematic binary data")
 
 	_ = os.WriteFile(filepath.Join(srcDir, "mods", "jei.jar"), modContent, 0644)
 	_ = os.WriteFile(filepath.Join(srcDir, "config", "jei.json"), configContent, 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "zeustemple.schematic"), schematicContent, 0644)
 
 	// Pre-create identical file in dstDir for jei.jar to test delta skipping
 	_ = os.MkdirAll(filepath.Join(dstDir, "mods"), 0755)
 	_ = os.WriteFile(filepath.Join(dstDir, "mods", "jei.jar"), modContent, 0644)
 
-	manifest, err := scanner.ScanSelectedFiles(srcDir, []string{"mods/jei.jar", "config/jei.json"}, nil)
+	// Pre-create an obsolete file in mods to test absolute sync pruning
+	_ = os.WriteFile(filepath.Join(dstDir, "mods", "obsolete-mod.jar"), []byte("obsolete jar to delete"), 0644)
+
+	// Pre-create an extra file in root to test that root files are NOT touched
+	_ = os.WriteFile(filepath.Join(dstDir, "friend-personal-options.txt"), []byte("do not delete me"), 0644)
+
+	manifest, err := scanner.ScanSelectedFiles(
+		srcDir,
+		[]string{"mods/jei.jar", "config/jei.json", "zeustemple.schematic"},
+		[]string{"mods"}, // Only mods is marked for absolute sync
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("Failed to scan source files: %v", err)
 	}
@@ -68,7 +81,7 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 		t.Errorf("Receiver error: %v", receiverErr)
 	}
 
-	// Verify jei.json was transferred
+	// Verify jei.json and zeustemple.schematic were transferred
 	receivedConfig, err := os.ReadFile(filepath.Join(dstDir, "config", "jei.json"))
 	if err != nil {
 		t.Fatalf("Failed to read received config file: %v", err)
@@ -77,12 +90,25 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 		t.Errorf("Received config mismatch. Expected %s, got %s", configContent, receivedConfig)
 	}
 
-	// Verify jei.jar matches
-	receivedMod, err := os.ReadFile(filepath.Join(dstDir, "mods", "jei.jar"))
+	receivedSchematic, err := os.ReadFile(filepath.Join(dstDir, "zeustemple.schematic"))
 	if err != nil {
-		t.Fatalf("Failed to read received mod file: %v", err)
+		t.Fatalf("Failed to read received schematic: %v", err)
 	}
-	if string(receivedMod) != string(modContent) {
-		t.Errorf("Received mod mismatch")
+	if string(receivedSchematic) != string(schematicContent) {
+		t.Errorf("Received schematic mismatch")
+	}
+
+	// Verify obsolete-mod.jar was DELETED because mods had Absolute Sync enabled!
+	if _, err := os.Stat(filepath.Join(dstDir, "mods", "obsolete-mod.jar")); !os.IsNotExist(err) {
+		t.Errorf("Expected obsolete-mod.jar to be pruned from mods/ folder")
+	}
+
+	// Verify friend-personal-options.txt in root was PRESERVED!
+	personalContent, err := os.ReadFile(filepath.Join(dstDir, "friend-personal-options.txt"))
+	if err != nil {
+		t.Fatalf("friend-personal-options.txt in root must NOT be deleted: %v", err)
+	}
+	if string(personalContent) != "do not delete me" {
+		t.Errorf("friend-personal-options.txt content corrupted")
 	}
 }

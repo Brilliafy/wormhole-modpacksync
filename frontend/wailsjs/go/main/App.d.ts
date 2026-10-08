@@ -18,6 +18,6 @@ export function SelectFolder():Promise<string>;
 
 export function StartReceiver(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function StartSender(arg1:string,arg2:Array<string>,arg3:string,arg4:string):Promise<models.SenderInitResult>;
+export function StartSender(arg1:string,arg2:Array<string>,arg3:Array<string>,arg4:string,arg5:string):Promise<models.SenderInitResult>;
 
 export function Stop():Promise<void>;

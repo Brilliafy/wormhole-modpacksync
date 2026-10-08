@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { Folder, File, ChevronRight, ChevronDown, Check, Search, Filter } from "@lucide/svelte";
+  import { Folder, File, ChevronRight, ChevronDown, Check, Search, Filter, Sparkles } from "@lucide/svelte";
   import { formatBytes } from "../lib/format";
   import type { models } from "../../wailsjs/go/models";
 
   interface Props {
     rootNode: models.FileTreeNode;
-    onSelectionChange?: (selectedPaths: string[]) => void;
+    onSelectionChange?: (selectedPaths: string[], absoluteSyncFolders: string[]) => void;
   }
 
   let { rootNode, onSelectionChange }: Props = $props();
@@ -15,20 +15,25 @@
 
   // Map of path to checked state
   let checkedMap = $state<Record<string, boolean>>({});
+  // Map of folder path to Absolute Sync (mirror / delete extra files) state
+  let absoluteSyncMap = $state<Record<string, boolean>>({});
 
-  // Initialize checkedMap from rootNode
-  function initChecked(node: models.FileTreeNode) {
+  // Initialize maps from rootNode
+  function initMaps(node: models.FileTreeNode) {
     checkedMap[node.relPath] = node.checked;
+    if (node.isDir && node.relPath !== "") {
+      absoluteSyncMap[node.relPath] = node.absoluteSync;
+    }
     if (node.children) {
       for (const child of node.children) {
-        initChecked(child);
+        initMaps(child);
       }
     }
   }
 
   $effect(() => {
     if (rootNode) {
-      initChecked(rootNode);
+      initMaps(rootNode);
       // Auto-expand top level folders
       if (rootNode.children) {
         for (const child of rootNode.children) {
@@ -61,6 +66,11 @@
     }
   }
 
+  function toggleAbsoluteSync(relPath: string) {
+    absoluteSyncMap[relPath] = !absoluteSyncMap[relPath];
+    notifySelection();
+  }
+
   function applyMinecraftPreset() {
     const excludes = ["saves", "screenshots", "logs", "crash-reports", "options.txt", "servers.dat", "usercache.json"];
     
@@ -74,6 +84,14 @@
         }
       }
       checkedMap[node.relPath] = shouldCheck;
+
+      // Automatically enable Absolute Sync on mods and config!
+      if (node.isDir && node.relPath !== "") {
+        if (lower === "mods" || lower === "config" || lower === "defaultconfigs") {
+          absoluteSyncMap[node.relPath] = true;
+        }
+      }
+
       if (node.children) {
         for (const child of node.children) {
           applyRecursive(child);
@@ -112,9 +130,19 @@
     return list;
   }
 
+  function getAbsoluteSyncFolders(): string[] {
+    const list: string[] = [];
+    for (const [folderPath, enabled] of Object.entries(absoluteSyncMap)) {
+      if (enabled && folderPath !== "") {
+        list.push(folderPath);
+      }
+    }
+    return list;
+  }
+
   function notifySelection() {
     if (onSelectionChange) {
-      onSelectionChange(getSelectedFilePaths());
+      onSelectionChange(getSelectedFilePaths(), getAbsoluteSyncFolders());
     }
   }
 
@@ -137,6 +165,12 @@
       countStats(rootNode);
     }
     return { count, bytes };
+  });
+
+  let activeMirroredFolders = $derived.by(() => {
+    return Object.entries(absoluteSyncMap)
+      .filter(([path, enabled]) => enabled && path !== "")
+      .map(([path]) => path);
   });
 
   // Filter helper
@@ -191,6 +225,16 @@
       />
     </div>
   </div>
+
+  <!-- Absolute Sync Legend Banner -->
+  {#if activeMirroredFolders.length > 0}
+    <div class="px-3 py-1.5 bg-amber-950/30 border-b border-amber-500/20 flex items-center justify-between text-[11px] text-amber-300/90">
+      <span class="flex items-center gap-1.5">
+        <Sparkles class="w-3 h-3 text-amber-400" />
+        <span>Absolute Sync active on: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (extra files in friend's folders will be pruned)</span>
+      </span>
+    </div>
+  {/if}
 
   <!-- Tree List View -->
   <div class="flex-1 overflow-y-auto p-2 font-mono text-xs max-h-[360px] divide-y divide-slate-900/50">
@@ -264,6 +308,19 @@
           <span class="text-slate-300 truncate">{node.name}</span>
         {/if}
       </button>
+
+      <!-- Absolute Sync (Mirror) Toggle Badge (Only for folders with relPath != "") -->
+      {#if node.isDir && node.relPath}
+        <button
+          type="button"
+          onclick={(e) => { e.stopPropagation(); toggleAbsoluteSync(node.relPath); }}
+          class="px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition-all cursor-pointer {absoluteSyncMap[node.relPath] ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm' : 'bg-slate-800 text-slate-500 hover:text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'}"
+          title="Toggle Absolute Sync: When enabled, any extra files on your friend's side inside this folder will be deleted to make it an exact 1:1 match."
+        >
+          <Sparkles class="w-2.5 h-2.5 {absoluteSyncMap[node.relPath] ? 'text-amber-400' : 'text-slate-500'}" />
+          <span>{absoluteSyncMap[node.relPath] ? 'Mirror (Prune Extras)' : 'Mirror'}</span>
+        </button>
+      {/if}
 
       <!-- Size -->
       {#if node.size > 0}
