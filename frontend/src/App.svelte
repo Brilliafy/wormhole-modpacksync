@@ -93,7 +93,7 @@
   }
 </script>
 
-<main class="min-h-screen bg-[#0c0f17] text-slate-100 flex flex-col font-sans selection:bg-purple-500/30 selection:text-white">
+<main class="min-h-screen bg-[#0e0f12] text-neutral-100 flex flex-col font-sans selection:bg-amber-500/30 selection:text-white">
   <!-- Top Header Navigation -->
   <Header
     tailscaleIP={networkInfo?.tailscaleIP}

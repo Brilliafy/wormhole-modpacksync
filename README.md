@@ -1,24 +1,24 @@
-# Wormhole Modpack Sync 🌌
+# Wormhole Modpack Sync
 
-A modern, high-performance, cross-platform delta synchronizer built with **Go**, **Wails**, **Svelte 5**, and **Tailwind CSS**. Designed specifically for Minecraft modpacks (and generic folder synchronization) across **Linux** and **Windows**.
+A high-performance, cross-platform file synchronizer built with **Go**, **Wails**, **Svelte 5**, and **Tailwind CSS**. Designed specifically for Minecraft modpacks (and generic folder synchronization) across **Linux** and **Windows**.
 
 ---
 
-## ⚡ Features
+## Technical Features
 
-- **Delta Synchronization**: Only transfers new or modified files. Files with matching SHA-256 hashes are automatically skipped, saving gigabytes of bandwidth and minutes of wait time.
+- **Differential Transfer**: Only transfers new or modified files. Files with matching SHA-256 hashes are automatically skipped, saving bandwidth and transfer time.
 - **Atomic Safe Writes**: Every incoming file is streamed into a `.wormhole.tmp` file, hash-verified, and then atomically renamed into place. Connection drops or pauses will never corrupt existing instance files.
 - **Two Network Modes**:
-  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels punched through NAT using STUN servers. Share a simple 6-digit code with your friend.
-  2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
-- **Absolute Sync (Folder Mirroring & Pruning)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror your folder 1:1. Any extra or obsolete files on your friend's side within those specific folders are automatically pruned, while non-mirrored directories (such as individual files like `zeustemple.schematic` in the root) remain untouched without deleting other root files.
-- **Interactive File Tree & Modpack Presets**:
-  - Filter and check/uncheck files and directories to sync.
-  - Per-folder **Mirror (Prune Extras)** toggle button with visual status indicators.
-  - Built-in **Modpack Preset** that automatically enables `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `kubejs/`, `scripts/` (with Absolute Sync on `mods/` and `config/`) while safeguarding personal player files (`saves/`, `logs/`, `screenshots/`, `options.txt`).
-- **Intuitive UI Flow**:
-  - **Receive Files**: Pick destination directory &rarr; Enter code &rarr; Form locks into a glowing circular progress ring with centered telemetry &rarr; Completion chime plays &rarr; Close button.
-  - **Send Files**: Choose instance &rarr; Customize file tree &rarr; Share code/address &rarr; Start, Pause, Resume, Stop &rarr; Live progress bar &amp; speed indicator (MB/s).
+  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels punched through NAT using STUN servers. Share a 6-digit session code with your peer.
+  2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP socket transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
+- **Folder Mirroring & Pruning (Absolute Sync)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror 1:1. Any extra or obsolete files on the receiver's side within those specific folders are automatically pruned, while non-mirrored directories and root files (such as individual files like `zeustemple.schematic`) remain untouched.
+- **Hierarchical Directory Tree & Presets**:
+  - Filter and toggle files and directories to sync.
+  - Per-folder **1:1 Mirror (Prune)** toggle button with visual status indicators.
+  - Built-in **Modpack Preset** that automatically enables `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `kubejs/`, `scripts/` (with 1:1 mirror on `mods/` and `config/`) while safeguarding personal player files (`saves/`, `logs/`, `screenshots/`, `options.txt`).
+- **Tactile UI Console**:
+  - **Receive Mode**: Pick destination directory &rarr; Enter session code &rarr; Console locks into a precision circular gauge with centered telemetry &rarr; Completion audio notification &rarr; Close button.
+  - **Send Mode**: Choose instance &rarr; Curate directory tree &rarr; Share code/address &rarr; Start, Pause, Resume, Stop &rarr; Live progress bar &amp; speed indicator (MB/s).
 - **Universal Audio Notification**: Zero-dependency Web Audio API harmonic chime triggers when synchronization completes.
 
 ---
