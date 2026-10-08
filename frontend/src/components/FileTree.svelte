@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Folder, File, ChevronRight, ChevronDown, Check, Search, Filter, Sparkles } from "@lucide/svelte";
+  import { Folder, File, ChevronRight, ChevronDown, Check, Search, Filter, CopyCheck } from "@lucide/svelte";
   import { formatBytes } from "../lib/format";
   import type { models } from "../../wailsjs/go/models";
 
@@ -185,59 +185,60 @@
   }
 </script>
 
-<div class="flex flex-col h-full bg-slate-950/60 rounded-xl border border-slate-800 overflow-hidden">
+<div class="flex flex-col h-full bg-[#121317] rounded-[3px] border border-[#262731] overflow-hidden">
   <!-- Toolbar -->
-  <div class="p-3 bg-slate-900/80 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
-    <!-- Presets -->
+  <div class="p-2.5 bg-[#17181f] border-b border-[#262731] flex flex-wrap items-center justify-between gap-2">
+    <!-- Presets & Bulk Controls -->
     <div class="flex items-center gap-1.5">
       <button
         type="button"
         onclick={applyMinecraftPreset}
-        class="px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1"
+        class="px-2.5 py-1 rounded-[3px] bg-[#22232c] hover:bg-[#2b2d38] active:translate-y-[1px] border border-[#353746] text-amber-400 text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5"
+        title="Automatically checks mods, config, scripts while deselecting saves, logs, and options"
       >
-        <Filter class="w-3 h-3" />
+        <Filter class="w-3 h-3 text-amber-500" />
         <span>Modpack Preset</span>
       </button>
       <button
         type="button"
         onclick={() => selectAll(true)}
-        class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
+        class="px-2 py-1 rounded-[3px] bg-[#1a1b22] hover:bg-[#23252f] active:translate-y-[1px] border border-[#2b2d38] text-neutral-300 text-xs transition-colors cursor-pointer"
       >
         All
       </button>
       <button
         type="button"
         onclick={() => selectAll(false)}
-        class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
+        class="px-2 py-1 rounded-[3px] bg-[#1a1b22] hover:bg-[#23252f] active:translate-y-[1px] border border-[#2b2d38] text-neutral-300 text-xs transition-colors cursor-pointer"
       >
         None
       </button>
     </div>
 
     <!-- Search box -->
-    <div class="relative w-44 md:w-56">
-      <Search class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+    <div class="relative w-44 md:w-52">
+      <Search class="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
       <input
         type="text"
         bind:value={searchQuery}
-        placeholder="Filter mods, configs..."
-        class="w-full bg-slate-900 text-slate-200 text-xs rounded-lg pl-8 pr-2.5 py-1.5 border border-slate-800 focus:outline-none focus:border-indigo-500/50"
+        placeholder="Filter path..."
+        class="w-full bg-[#111216] text-neutral-200 text-xs rounded-[3px] pl-7 pr-2.5 py-1 border border-[#2a2c37] focus:outline-none focus:border-amber-500 font-mono"
       />
     </div>
   </div>
 
   <!-- Absolute Sync Legend Banner -->
   {#if activeMirroredFolders.length > 0}
-    <div class="px-3 py-1.5 bg-amber-950/30 border-b border-amber-500/20 flex items-center justify-between text-[11px] text-amber-300/90">
+    <div class="px-3 py-1 bg-[#1c1810] border-b border-[#3d3119] flex items-center justify-between text-[11px] text-amber-300/90 font-mono">
       <span class="flex items-center gap-1.5">
-        <Sparkles class="w-3 h-3 text-amber-400" />
-        <span>Absolute Sync active on: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (extra files in friend's folders will be pruned)</span>
+        <CopyCheck class="w-3 h-3 text-amber-400 flex-shrink-0" />
+        <span>1:1 Mirror active on: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (remote extras will be pruned)</span>
       </span>
     </div>
   {/if}
 
   <!-- Tree List View -->
-  <div class="flex-1 overflow-y-auto p-2 font-mono text-xs max-h-[360px] divide-y divide-slate-900/50">
+  <div class="flex-1 overflow-y-auto p-1.5 font-mono text-xs max-h-[360px] divide-y divide-[#181920]">
     {#if rootNode && rootNode.children}
       {#each rootNode.children as child (child.relPath)}
         {#if nodeMatchesSearch(child, searchQuery)}
@@ -245,17 +246,17 @@
         {/if}
       {/each}
     {:else}
-      <div class="p-6 text-center text-slate-500">No files found in directory</div>
+      <div class="p-6 text-center text-neutral-500 font-sans text-xs">No files detected in directory</div>
     {/if}
   </div>
 
   <!-- Footer Stats Bar -->
-  <div class="p-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs">
-    <div class="text-slate-400">
-      Selected: <strong class="text-indigo-400">{selectionStats.count} files</strong>
+  <div class="px-3 py-2 bg-[#17181f] border-t border-[#262731] flex items-center justify-between text-[11px] font-mono tabular-nums">
+    <div class="text-neutral-400">
+      <span class="text-neutral-500">SELECTED:</span> <strong class="text-amber-400 font-semibold">{selectionStats.count} files</strong>
     </div>
-    <div class="text-slate-400 font-mono">
-      Total Size: <strong class="text-purple-400">{formatBytes(selectionStats.bytes)}</strong>
+    <div class="text-neutral-400">
+      <span class="text-neutral-500">SIZE:</span> <strong class="text-neutral-200 font-semibold">{formatBytes(selectionStats.bytes)}</strong>
     </div>
   </div>
 </div>
@@ -263,31 +264,31 @@
 {#snippet TreeNode(node: models.FileTreeNode, depth: number)}
   <div class="group select-none">
     <div
-      class="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-slate-800/60 transition-colors"
-      style="padding-left: {depth * 18 + 6}px;"
+      class="flex items-center gap-2 py-0.5 px-1 rounded-[2px] hover:bg-[#1a1b22] transition-colors h-7"
+      style="padding-left: {depth * 16 + 4}px;"
     >
       <!-- Expand / Collapse chevron for folders -->
       {#if node.isDir}
         <button
           type="button"
           onclick={() => toggleExpand(node.relPath)}
-          class="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-white cursor-pointer"
+          class="w-3.5 h-3.5 flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
         >
           {#if expandedFolders[node.relPath]}
-            <ChevronDown class="w-3.5 h-3.5" />
+            <ChevronDown class="w-3 h-3" />
           {:else}
-            <ChevronRight class="w-3.5 h-3.5" />
+            <ChevronRight class="w-3 h-3" />
           {/if}
         </button>
       {:else}
-        <span class="w-4"></span>
+        <span class="w-3.5"></span>
       {/if}
 
-      <!-- Custom Checkbox -->
+      <!-- Custom Checkbox (Crisp square) -->
       <button
         type="button"
         onclick={() => toggleCheck(node)}
-        class="w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-all {checkedMap[node.relPath] ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-slate-700 bg-slate-900 hover:border-slate-500'}"
+        class="w-3.5 h-3.5 rounded-[2px] border flex items-center justify-center cursor-pointer transition-colors {checkedMap[node.relPath] ? 'bg-amber-600 border-amber-500 text-black' : 'border-[#383a48] bg-[#101115] hover:border-[#525566]'}"
       >
         {#if checkedMap[node.relPath]}
           <Check class="w-3 h-3 stroke-[3]" />
@@ -301,30 +302,30 @@
         onclick={() => node.isDir && toggleExpand(node.relPath)}
       >
         {#if node.isDir}
-          <Folder class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-          <span class="font-semibold text-slate-200 truncate">{node.name}</span>
+          <Folder class="w-3.5 h-3.5 text-amber-500/90 flex-shrink-0" />
+          <span class="font-medium text-neutral-200 truncate">{node.name}</span>
         {:else}
-          <File class="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-          <span class="text-slate-300 truncate">{node.name}</span>
+          <File class="w-3.5 h-3.5 text-neutral-400 flex-shrink-0" />
+          <span class="text-neutral-300 truncate">{node.name}</span>
         {/if}
       </button>
 
-      <!-- Absolute Sync (Mirror) Toggle Badge (Only for folders with relPath != "") -->
+      <!-- 1:1 Mirror Toggle Badge (Only for folders with relPath != "") -->
       {#if node.isDir && node.relPath}
         <button
           type="button"
           onclick={(e) => { e.stopPropagation(); toggleAbsoluteSync(node.relPath); }}
-          class="px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition-all cursor-pointer {absoluteSyncMap[node.relPath] ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm' : 'bg-slate-800 text-slate-500 hover:text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'}"
-          title="Toggle Absolute Sync: When enabled, any extra files on your friend's side inside this folder will be deleted to make it an exact 1:1 match."
+          class="px-1.5 py-0.2 rounded-[2px] text-[10px] font-mono tracking-tight flex items-center gap-1 transition-colors cursor-pointer {absoluteSyncMap[node.relPath] ? 'bg-[#291f0c] text-amber-300 border border-[#5c4415]' : 'bg-[#181920] text-neutral-500 hover:text-neutral-300 border border-[#2b2d38]'}"
+          title="Toggle 1:1 Mirror: unlisted files in friend's remote folder will be pruned."
         >
-          <Sparkles class="w-2.5 h-2.5 {absoluteSyncMap[node.relPath] ? 'text-amber-400' : 'text-slate-500'}" />
-          <span>{absoluteSyncMap[node.relPath] ? 'Mirror (Prune Extras)' : 'Mirror'}</span>
+          <CopyCheck class="w-2.5 h-2.5 {absoluteSyncMap[node.relPath] ? 'text-amber-400' : 'text-neutral-500'}" />
+          <span>{absoluteSyncMap[node.relPath] ? '1:1 MIRROR' : 'MIRROR'}</span>
         </button>
       {/if}
 
-      <!-- Size -->
+      <!-- Size with tabular numbers -->
       {#if node.size > 0}
-        <span class="text-[11px] text-slate-500 font-mono ml-2 group-hover:text-slate-400">
+        <span class="text-[10px] text-neutral-500 font-mono ml-2 group-hover:text-neutral-400 tabular-nums">
           {formatBytes(node.size)}
         </span>
       {/if}

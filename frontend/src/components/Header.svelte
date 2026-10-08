@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Zap, Network, RefreshCw } from "@lucide/svelte";
+  import { Network, RotateCcw, FolderSync, ShieldCheck } from "@lucide/svelte";
 
   interface Props {
     tailscaleIP?: string;
@@ -18,52 +18,53 @@
   }: Props = $props();
 </script>
 
-<header class="w-full bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 px-6 py-4 flex items-center justify-between sticky top-0 z-50">
+<header class="w-full bg-[#141519] border-b border-[#262730] px-5 py-3 flex items-center justify-between sticky top-0 z-50">
   <div class="flex items-center gap-3">
-    <div class="relative w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/20">
-      <Zap class="w-5 h-5 text-white animate-pulse" />
-      <div class="absolute inset-0 rounded-xl bg-purple-400/20 blur-sm -z-10"></div>
+    <!-- Solid technical icon -->
+    <div class="w-8 h-8 rounded-[3px] bg-[#1e2026] border border-[#31333e] flex items-center justify-center text-amber-500 shadow-sm">
+      <FolderSync class="w-4 h-4" />
     </div>
     <div class="text-left">
       <div class="flex items-center gap-2">
-        <h1 class="text-base font-bold tracking-tight text-white flex items-center gap-2">
-          Wormhole Sync
-          <span class="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-            Delta
+        <h1 class="text-sm font-semibold tracking-tight text-white flex items-center gap-2">
+          Wormhole File Sync
+          <span class="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.2 rounded-[2px] bg-[#22242c] text-neutral-300 border border-[#343642]">
+            v1.1
           </span>
         </h1>
       </div>
-      <p class="text-xs text-slate-400">High-speed atomic P2P synchronizer</p>
+      <p class="text-[11px] text-neutral-400">P2P differential folder synchronizer</p>
     </div>
   </div>
 
-  <div class="flex items-center gap-3">
+  <div class="flex items-center gap-2">
     {#if tailscaleIP}
-      <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 text-xs font-mono">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-        <span class="font-semibold">Tailscale:</span> {tailscaleIP}
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] bg-[#102419] border border-[#1e462e] text-emerald-400 text-xs font-mono">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        <span class="text-neutral-400 font-sans text-[11px]">TAILSCALE:</span> {tailscaleIP}
       </div>
     {/if}
 
     <button
       type="button"
       onclick={onToggleNetworkMode}
-      class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
+      class="flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] bg-[#1e2026] hover:bg-[#272932] border border-[#2e303b] text-neutral-300 text-xs transition-colors cursor-pointer active:translate-y-[1px]"
       title="Click to toggle between WebRTC hole-punching and direct Tailscale/LAN connection"
     >
-      <Network class="w-3.5 h-3.5 text-indigo-400" />
-      <span>Mode: <strong class="text-white">{networkMode === "webrtc" ? "P2P Hole-Punch" : "Direct / Tailscale"}</strong></span>
+      <Network class="w-3.5 h-3.5 text-neutral-400" />
+      <span class="text-neutral-400 text-[11px]">MODE:</span>
+      <strong class="text-neutral-200 font-medium">{networkMode === "webrtc" ? "WebRTC Hole-Punch" : "Direct TCP / Tailscale"}</strong>
     </button>
 
     {#if canReset}
       <button
         type="button"
         onclick={onReset}
-        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-500/50 text-slate-300 hover:text-rose-300 text-xs transition-colors cursor-pointer"
-        title="Reset and choose another action"
+        class="flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] bg-[#1e2026] hover:bg-[#272932] border border-[#2e303b] text-neutral-300 text-xs transition-colors cursor-pointer active:translate-y-[1px]"
+        title="Return to main selection view"
       >
-        <RefreshCw class="w-3.5 h-3.5" />
-        <span>Home</span>
+        <RotateCcw class="w-3.5 h-3.5 text-neutral-400" />
+        <span>Main Menu</span>
       </button>
     {/if}
   </div>
