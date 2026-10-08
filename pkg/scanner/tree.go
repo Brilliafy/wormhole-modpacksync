@@ -96,13 +96,22 @@ func BuildFileTree(rootPath string) (*models.FileTreeNode, error) {
 			checked = false
 		}
 
+		absSync := false
+		if d.IsDir() {
+			lowerName := strings.ToLower(name)
+			if lowerName == "mods" || lowerName == "config" {
+				absSync = true
+			}
+		}
+
 		node := &models.FileTreeNode{
-			ID:       relSlash,
-			Name:     name,
-			RelPath:  relSlash,
-			IsDir:    d.IsDir(),
-			Checked:  checked,
-			Children: make([]*models.FileTreeNode, 0),
+			ID:           relSlash,
+			Name:         name,
+			RelPath:      relSlash,
+			IsDir:        d.IsDir(),
+			Checked:      checked,
+			AbsoluteSync: absSync,
+			Children:     make([]*models.FileTreeNode, 0),
 		}
 
 		if !d.IsDir() {

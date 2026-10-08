@@ -7,6 +7,7 @@ export namespace models {
 	    isDir: boolean;
 	    size: number;
 	    checked: boolean;
+	    absoluteSync: boolean;
 	    children?: FileTreeNode[];
 	
 	    static createFrom(source: any = {}) {
@@ -21,6 +22,7 @@ export namespace models {
 	        this.isDir = source["isDir"];
 	        this.size = source["size"];
 	        this.checked = source["checked"];
+	        this.absoluteSync = source["absoluteSync"];
 	        this.children = this.convertValues(source["children"], FileTreeNode);
 	    }
 	
@@ -64,6 +66,7 @@ export namespace models {
 	    tailscaleIP: string;
 	    selectedFiles: number;
 	    totalBytes: number;
+	    absoluteSyncFolders?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SenderInitResult(source);
@@ -76,6 +79,7 @@ export namespace models {
 	        this.tailscaleIP = source["tailscaleIP"];
 	        this.selectedFiles = source["selectedFiles"];
 	        this.totalBytes = source["totalBytes"];
+	        this.absoluteSyncFolders = source["absoluteSyncFolders"];
 	    }
 	}
 	export class SyncStats {
@@ -84,6 +88,7 @@ export namespace models {
 	    mode: string;
 	    totalFiles: number;
 	    completedFiles: number;
+	    prunedFiles: number;
 	    totalBytes: number;
 	    transferredBytes: number;
 	    speedBytesPerSec: number;
@@ -94,6 +99,7 @@ export namespace models {
 	    errorMessage: string;
 	    code: string;
 	    peerAddress: string;
+	    mirroredFolders?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SyncStats(source);
@@ -106,6 +112,7 @@ export namespace models {
 	        this.mode = source["mode"];
 	        this.totalFiles = source["totalFiles"];
 	        this.completedFiles = source["completedFiles"];
+	        this.prunedFiles = source["prunedFiles"];
 	        this.totalBytes = source["totalBytes"];
 	        this.transferredBytes = source["transferredBytes"];
 	        this.speedBytesPerSec = source["speedBytesPerSec"];
@@ -116,6 +123,7 @@ export namespace models {
 	        this.errorMessage = source["errorMessage"];
 	        this.code = source["code"];
 	        this.peerAddress = source["peerAddress"];
+	        this.mirroredFolders = source["mirroredFolders"];
 	    }
 	}
 

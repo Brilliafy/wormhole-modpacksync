@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Folder, KeyRound, Download, X, AlertCircle, ArrowLeft, CheckCircle2 } from "@lucide/svelte";
+  import { Folder, KeyRound, Download, X, AlertCircle, ArrowLeft, CheckCircle2, Sparkles } from "@lucide/svelte";
   import ProgressRing from "./ProgressRing.svelte";
   import { SelectFolder, StartReceiver } from "../../wailsjs/go/main/App";
   import type { models } from "../../wailsjs/go/models";
@@ -220,6 +220,19 @@
           {#if currentStats.totalBytes > 0}
             <div class="text-[11px] text-slate-500 font-mono mt-1">
               {formatBytes(currentStats.transferredBytes || 0)} / {formatBytes(currentStats.totalBytes)}
+            </div>
+          {/if}
+
+          {#if currentStats.mirroredFolders && currentStats.mirroredFolders.length > 0}
+            <div class="mt-3 text-[11px] text-amber-300 font-mono flex items-center justify-center gap-1.5 px-3 py-1 bg-amber-950/40 rounded-lg border border-amber-500/20">
+              <Sparkles class="w-3.5 h-3.5 text-amber-400" />
+              <span>Absolute Mirror: <strong>{currentStats.mirroredFolders.join(", ")}</strong></span>
+            </div>
+          {/if}
+
+          {#if currentStats.prunedFiles > 0}
+            <div class="mt-1.5 text-[11px] text-amber-300 font-mono flex items-center justify-center gap-1.5">
+              <span>🧹 Pruned {currentStats.prunedFiles} obsolete file{currentStats.prunedFiles === 1 ? '' : 's'}</span>
             </div>
           {/if}
         </div>

@@ -12,7 +12,8 @@
     AlertCircle,
     CheckCircle2,
     Zap,
-    RefreshCw
+    RefreshCw,
+    Sparkles
   } from "@lucide/svelte";
   import FileTree from "./FileTree.svelte";
   import { SelectFolder, ScanFolder, StartSender, Pause as WailsPause, Resume as WailsResume, Stop as WailsStop } from "../../wailsjs/go/main/App";
@@ -32,6 +33,7 @@
   let instanceFolder = $state("");
   let fileTree = $state<models.FileTreeNode | null>(null);
   let selectedPaths = $state<string[]>([]);
+  let absoluteSyncFolders = $state<string[]>([]);
   let isScanningTree = $state(false);
 
   let roomCode = $state("");
@@ -95,8 +97,9 @@
     }
   }
 
-  function handleSelectionChange(paths: string[]) {
+  function handleSelectionChange(paths: string[], absFolders: string[]) {
     selectedPaths = paths;
+    absoluteSyncFolders = absFolders;
   }
 
   async function handleStartSender() {
@@ -114,7 +117,7 @@
     soundPlayed = false;
 
     try {
-      const result = await StartSender(instanceFolder, selectedPaths, networkMode, roomCode.trim());
+      const result = await StartSender(instanceFolder, selectedPaths, absoluteSyncFolders, networkMode, roomCode.trim());
       if (result) {
         roomCode = result.code;
         directAddresses = result.directAddresses || [];
@@ -291,6 +294,13 @@
             </div>
           {/if}
         {/if}
+
+        {#if absoluteSyncFolders.length > 0}
+          <div class="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
+            <Sparkles class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+            <span>Absolute Sync will prune extra files in: <strong class="text-amber-200">{absoluteSyncFolders.join(", ")}</strong></span>
+          </div>
+        {/if}
       </div>
 
       <!-- Live Transfer Status & Progress Bar -->
@@ -341,6 +351,13 @@
           {#if currentStats.currentFile && !isComplete}
             <div class="text-[10px] text-slate-400 font-mono truncate">
               File: <span class="text-purple-300">{currentStats.currentFile}</span>
+            </div>
+          {/if}
+
+          {#if currentStats.prunedFiles > 0}
+            <div class="text-[11px] text-amber-300 font-mono flex items-center gap-1.5 bg-amber-950/30 px-2 py-1 rounded border border-amber-500/20">
+              <Sparkles class="w-3 h-3 text-amber-400" />
+              <span>Pruned {currentStats.prunedFiles} obsolete file{currentStats.prunedFiles === 1 ? '' : 's'} on peer</span>
             </div>
           {/if}
         </div>

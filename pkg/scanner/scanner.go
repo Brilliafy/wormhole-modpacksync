@@ -10,7 +10,7 @@ import (
 )
 
 // ScanSelectedFiles gathers selected files from rootPath, filters them, hashes them, and builds a SyncManifest
-func ScanSelectedFiles(rootPath string, selectedPaths []string, onProgress func(done int, total int, current string)) (*models.SyncManifest, error) {
+func ScanSelectedFiles(rootPath string, selectedPaths []string, absoluteSyncFolders []string, onProgress func(done int, total int, current string)) (*models.SyncManifest, error) {
 	selectedSet := make(map[string]bool)
 	for _, p := range selectedPaths {
 		norm := filepath.ToSlash(filepath.Clean(p))
@@ -113,11 +113,20 @@ func ScanSelectedFiles(rootPath string, selectedPaths []string, onProgress func(
 		totalBytes += f.Size
 	}
 
+	normalizedAbsFolders := make([]string, 0, len(absoluteSyncFolders))
+	for _, folder := range absoluteSyncFolders {
+		clean := filepath.ToSlash(filepath.Clean(folder))
+		if clean != "" && clean != "." {
+			normalizedAbsFolders = append(normalizedAbsFolders, clean)
+		}
+	}
+
 	return &models.SyncManifest{
-		InstanceName: filepath.Base(rootPath),
-		CreatedAt:    time.Now().Unix(),
-		Files:        hashedFiles,
-		TotalFiles:   len(hashedFiles),
-		TotalBytes:   totalBytes,
+		InstanceName:        filepath.Base(rootPath),
+		CreatedAt:           time.Now().Unix(),
+		Files:               hashedFiles,
+		TotalFiles:          len(hashedFiles),
+		TotalBytes:          totalBytes,
+		AbsoluteSyncFolders: normalizedAbsFolders,
 	}, nil
 }

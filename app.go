@@ -57,12 +57,12 @@ func (a *App) GetNetworkInfo() *models.NetworkInfo {
 	return a.sessionManager.GetNetworkInfo()
 }
 
-// StartSender starts the sender session with selected file paths
-func (a *App) StartSender(folderPath string, selectedPaths []string, mode string, customCode string) (*models.SenderInitResult, error) {
+// StartSender starts the sender session with selected file paths and optional absolute sync folders
+func (a *App) StartSender(folderPath string, selectedPaths []string, absoluteSyncFolders []string, mode string, customCode string) (*models.SenderInitResult, error) {
 	if a.sessionManager == nil {
 		return nil, fmt.Errorf("session manager not initialized")
 	}
-	return a.sessionManager.StartSenderSession(folderPath, selectedPaths, mode, customCode)
+	return a.sessionManager.StartSenderSession(folderPath, selectedPaths, absoluteSyncFolders, mode, customCode)
 }
 
 // StartReceiver starts the receiver session
