@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "wormhole-sync",
+  "outputfilename": "wormhole-sync",
+  "frontend:install": "pnpm install --ignore-scripts",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Brilliafy",
+    "email": "mesnosmichael@gmail.com"
+  }
+}

@@ -1,0 +1,640 @@
+package transport
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/pion/webrtc/v4"
+	"wormhole-sync/pkg/atomicfile"
+	"wormhole-sync/pkg/delta"
+	"wormhole-sync/pkg/models"
+)
+
+const WebRTCChunkSize = 32 * 1024
+
+// DefaultICEServers provides standard STUN servers for NAT hole-punching
+var DefaultICEServers = []webrtc.ICEServer{
+	{
+		URLs: []string{
+			"stun:stun.l.google.com:19302",
+			"stun:stun1.l.google.com:19302",
+			"stun:stun2.l.google.com:19302",
+			"stun:stun.cloudflare.com:3478",
+		},
+	},
+}
+
+// WebRTCSender handles P2P file sync over WebRTC DataChannels
+type WebRTCSender struct {
+	mu           sync.Mutex
+	peerConn     *webrtc.PeerConnection
+	dataChan     *webrtc.DataChannel
+	manifest     *models.SyncManifest
+	rootDir      string
+	speedTracker *SpeedTracker
+	paused       int32
+	stopped      int32
+	pauseCond    *sync.Cond
+	pauseMu      sync.Mutex
+	onProgress   func(models.SyncStats)
+}
+
+func NewWebRTCSender(rootDir string, manifest *models.SyncManifest, onProgress func(models.SyncStats)) *WebRTCSender {
+	s := &WebRTCSender{
+		rootDir:      rootDir,
+		manifest:     manifest,
+		speedTracker: NewSpeedTracker(),
+		onProgress:   onProgress,
+	}
+	s.pauseCond = sync.NewCond(&s.pauseMu)
+	return s
+}
+
+// CreateOffer initializes the WebRTC connection and returns base64-encoded offer with ICE candidates gathered
+func (s *WebRTCSender) CreateOffer() (string, error) {
+	config := webrtc.Configuration{
+		ICEServers: DefaultICEServers,
+	}
+
+	pc, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		return "", fmt.Errorf("failed to create peer connection: %w", err)
+	}
+	s.peerConn = pc
+
+	dc, err := pc.CreateDataChannel("wormhole-sync", nil)
+	if err != nil {
+		pc.Close()
+		return "", fmt.Errorf("failed to create data channel: %w", err)
+	}
+	s.dataChan = dc
+
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		pc.Close()
+		return "", fmt.Errorf("failed to create offer: %w", err)
+	}
+
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	if err = pc.SetLocalDescription(offer); err != nil {
+		pc.Close()
+		return "", fmt.Errorf("failed to set local description: %w", err)
+	}
+
+	// Wait for ICE candidates gathering to finish so the SDP is completely self-contained
+	<-gatherComplete
+
+	offerJSON, err := json.Marshal(pc.LocalDescription())
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(offerJSON), nil
+}
+
+// SetAnswer sets the remote SDP answer received from the peer
+func (s *WebRTCSender) SetAnswer(answerBase64 string) error {
+	raw, err := base64.StdEncoding.DecodeString(answerBase64)
+	if err != nil {
+		return fmt.Errorf("invalid base64 answer: %w", err)
+	}
+
+	var answer webrtc.SessionDescription
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return fmt.Errorf("invalid json answer: %w", err)
+	}
+
+	return s.peerConn.SetRemoteDescription(answer)
+}
+
+func (s *WebRTCSender) Pause() {
+	atomic.StoreInt32(&s.paused, 1)
+	s.updateStatus(models.SyncStats{
+		Status:  "paused",
+		Role:    "sender",
+		Mode:    "webrtc",
+		Message: "Transfer paused",
+	})
+}
+
+func (s *WebRTCSender) Resume() {
+	atomic.StoreInt32(&s.paused, 0)
+	s.pauseCond.Broadcast()
+	s.updateStatus(models.SyncStats{
+		Status:  "syncing",
+		Role:    "sender",
+		Mode:    "webrtc",
+		Message: "Resuming transfer...",
+	})
+}
+
+func (s *WebRTCSender) Stop() {
+	atomic.StoreInt32(&s.stopped, 1)
+	atomic.StoreInt32(&s.paused, 0)
+	s.pauseCond.Broadcast()
+	if s.peerConn != nil {
+		_ = s.peerConn.Close()
+	}
+}
+
+func (s *WebRTCSender) checkPause() bool {
+	for atomic.LoadInt32(&s.paused) == 1 {
+		if atomic.LoadInt32(&s.stopped) == 1 {
+			return false
+		}
+		s.pauseMu.Lock()
+		s.pauseCond.Wait()
+		s.pauseMu.Unlock()
+	}
+	return atomic.LoadInt32(&s.stopped) == 0
+}
+
+func (s *WebRTCSender) updateStatus(stats models.SyncStats) {
+	if s.onProgress != nil {
+		s.onProgress(stats)
+	}
+}
+
+// StartSession waits for DataChannel open and coordinates file sync
+func (s *WebRTCSender) StartSession(ctx context.Context) error {
+	openChan := make(chan struct{})
+	msgChan := make(chan []byte, 100)
+
+	s.dataChan.OnOpen(func() {
+		close(openChan)
+	})
+
+	s.dataChan.OnMessage(func(msg webrtc.DataChannelMessage) {
+		msgChan <- msg.Data
+	})
+
+	s.updateStatus(models.SyncStats{
+		Status:  "waiting",
+		Role:    "sender",
+		Mode:    "webrtc",
+		Message: "Hole-punching peer connection (WebRTC/STUN)...",
+	})
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-openChan:
+	}
+
+	s.updateStatus(models.SyncStats{
+		Status:  "connecting",
+		Role:    "sender",
+		Mode:    "webrtc",
+		Message: "Direct P2P DataChannel established! Exchanging manifest...",
+	})
+
+	// Send manifest
+	manifestMsg := &ControlMessage{Type: MsgManifest, Manifest: s.manifest}
+	manifestBytes, _ := json.Marshal(manifestMsg)
+	if err := s.dataChan.Send(manifestBytes); err != nil {
+		return err
+	}
+
+	// Wait for REQUEST_DELTA
+	var deltaMsg ControlMessage
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case data := <-msgChan:
+		if err := json.Unmarshal(data, &deltaMsg); err != nil || deltaMsg.Type != MsgRequestDelta {
+			return fmt.Errorf("unexpected message waiting for delta request: %v", err)
+		}
+	}
+
+	neededPaths := make(map[string]bool)
+	for _, p := range deltaMsg.DeltaReq {
+		neededPaths[p] = true
+	}
+
+	filesToSend := make([]models.FileInfo, 0)
+	var totalDeltaBytes int64 = 0
+	for _, f := range s.manifest.Files {
+		if neededPaths[f.RelPath] {
+			filesToSend = append(filesToSend, f)
+			totalDeltaBytes += f.Size
+		}
+	}
+
+	totalNeededFiles := len(filesToSend)
+	if totalNeededFiles == 0 {
+		completeBytes, _ := json.Marshal(&ControlMessage{Type: MsgComplete})
+		_ = s.dataChan.Send(completeBytes)
+		s.updateStatus(models.SyncStats{
+			Status:           "finished",
+			Role:             "sender",
+			Mode:             "webrtc",
+			TotalFiles:       s.manifest.TotalFiles,
+			CompletedFiles:   s.manifest.TotalFiles,
+			TotalBytes:       s.manifest.TotalBytes,
+			TransferredBytes: 0,
+			Percent:          100,
+			Message:          "All files already identical! P2P sync complete.",
+		})
+		return nil
+	}
+
+	var transferredBytes int64 = 0
+	buf := make([]byte, WebRTCChunkSize)
+
+	for fileIdx, file := range filesToSend {
+		if !s.checkPause() {
+			return fmt.Errorf("transfer stopped by user")
+		}
+
+		fullPath := filepath.Join(s.rootDir, filepath.FromSlash(file.RelPath))
+		f, err := os.Open(fullPath)
+		if err != nil {
+			return fmt.Errorf("failed opening file %s: %w", file.RelPath, err)
+		}
+
+		startMsg, _ := json.Marshal(&ControlMessage{Type: MsgStartFile, File: &file})
+		if err := s.dataChan.Send(startMsg); err != nil {
+			f.Close()
+			return err
+		}
+
+		for {
+			if !s.checkPause() {
+				f.Close()
+				return fmt.Errorf("transfer stopped by user")
+			}
+
+			// Backpressure check: wait if buffered amount is high
+			for s.dataChan.BufferedAmount() > 1024*1024 {
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			n, readErr := f.Read(buf)
+			if n > 0 {
+				if err := s.dataChan.Send(buf[:n]); err != nil {
+					f.Close()
+					return err
+				}
+
+				transferredBytes += int64(n)
+				s.speedTracker.AddBytes(int64(n))
+
+				speed, _ := s.speedTracker.GetSpeed()
+				percent := float64(transferredBytes) / float64(totalDeltaBytes) * 100
+				if percent > 100 {
+					percent = 100
+				}
+
+				s.updateStatus(models.SyncStats{
+					Status:           "syncing",
+					Role:             "sender",
+					Mode:             "webrtc",
+					TotalFiles:       totalNeededFiles,
+					CompletedFiles:   fileIdx,
+					TotalBytes:       totalDeltaBytes,
+					TransferredBytes: transferredBytes,
+					SpeedBytesPerSec: speed,
+					SpeedFormatted:   models.FormatSpeed(speed),
+					Percent:          percent,
+					CurrentFile:      file.RelPath,
+					Message:          fmt.Sprintf("P2P Syncing [%d/%d] %s (%s)", fileIdx+1, totalNeededFiles, filepath.Base(file.RelPath), models.FormatSpeed(speed)),
+				})
+			}
+
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				f.Close()
+				return readErr
+			}
+		}
+		f.Close()
+
+		// Send end of file message
+		endMsg, _ := json.Marshal(&ControlMessage{Type: MsgEndFile})
+		if err := s.dataChan.Send(endMsg); err != nil {
+			return err
+		}
+
+		// Wait for ACK
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case data := <-msgChan:
+			var ack ControlMessage
+			_ = json.Unmarshal(data, &ack)
+			if ack.Type != MsgFileAck {
+				return fmt.Errorf("unexpected ack response: %v", ack.Type)
+			}
+		}
+	}
+
+	completeMsg, _ := json.Marshal(&ControlMessage{Type: MsgComplete})
+	_ = s.dataChan.Send(completeMsg)
+
+	s.updateStatus(models.SyncStats{
+		Status:           "finished",
+		Role:             "sender",
+		Mode:             "webrtc",
+		TotalFiles:       totalNeededFiles,
+		CompletedFiles:   totalNeededFiles,
+		TotalBytes:       totalDeltaBytes,
+		TransferredBytes: transferredBytes,
+		Percent:          100,
+		Message:          fmt.Sprintf("P2P Hole-Punch sync completed (%s)! All files verified.", models.FormatBytes(transferredBytes)),
+	})
+
+	return nil
+}
+
+// WebRTCReceiver connects to a peer via WebRTC and downloads delta files
+type WebRTCReceiver struct {
+	destDir      string
+	peerConn     *webrtc.PeerConnection
+	speedTracker *SpeedTracker
+	onProgress   func(models.SyncStats)
+	stopped      int32
+}
+
+func NewWebRTCReceiver(destDir string, onProgress func(models.SyncStats)) *WebRTCReceiver {
+	return &WebRTCReceiver{
+		destDir:      destDir,
+		speedTracker: NewSpeedTracker(),
+		onProgress:   onProgress,
+	}
+}
+
+// CreateAnswer accepts the sender's offer, configures WebRTC, and returns an Answer with gathered candidates
+func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(offerBase64)
+	if err != nil {
+		return "", fmt.Errorf("invalid base64 offer: %w", err)
+	}
+
+	var offer webrtc.SessionDescription
+	if err := json.Unmarshal(raw, &offer); err != nil {
+		return "", fmt.Errorf("invalid json offer: %w", err)
+	}
+
+	config := webrtc.Configuration{
+		ICEServers: DefaultICEServers,
+	}
+
+	pc, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		return "", err
+	}
+	r.peerConn = pc
+
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		pc.Close()
+		return "", err
+	}
+
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		pc.Close()
+		return "", err
+	}
+
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(answer); err != nil {
+		pc.Close()
+		return "", err
+	}
+
+	<-gatherComplete
+
+	answerJSON, err := json.Marshal(pc.LocalDescription())
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(answerJSON), nil
+}
+
+func (r *WebRTCReceiver) Stop() {
+	atomic.StoreInt32(&r.stopped, 1)
+	if r.peerConn != nil {
+		_ = r.peerConn.Close()
+	}
+}
+
+func (r *WebRTCReceiver) updateStatus(stats models.SyncStats) {
+	if r.onProgress != nil {
+		r.onProgress(stats)
+	}
+}
+
+func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
+	dcChan := make(chan *webrtc.DataChannel, 1)
+
+	r.peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
+		dcChan <- dc
+	})
+
+	r.updateStatus(models.SyncStats{
+		Status:  "waiting",
+		Role:    "receiver",
+		Mode:    "webrtc",
+		Message: "Connecting to sender via WebRTC STUN hole-punching...",
+	})
+
+	var dc *webrtc.DataChannel
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case dc = <-dcChan:
+	}
+
+	openChan := make(chan struct{})
+	msgChan := make(chan []byte, 100)
+
+	dc.OnOpen(func() {
+		close(openChan)
+	})
+
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		msgChan <- msg.Data
+	})
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-openChan:
+	}
+
+	r.updateStatus(models.SyncStats{
+		Status:  "analyzing",
+		Role:    "receiver",
+		Mode:    "webrtc",
+		Message: "Connected! Receiving manifest...",
+	})
+
+	// Receive manifest
+	var manifestMsg ControlMessage
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case data := <-msgChan:
+		if err := json.Unmarshal(data, &manifestMsg); err != nil || manifestMsg.Type != MsgManifest {
+			return fmt.Errorf("expected manifest message, got: %v", err)
+		}
+	}
+	manifest := manifestMsg.Manifest
+
+	// Plan delta
+	plan, err := delta.PlanDelta(r.destDir, manifest, func(checked, total int, current string) {
+		r.updateStatus(models.SyncStats{
+			Status:         "analyzing",
+			Role:           "receiver",
+			Mode:           "webrtc",
+			TotalFiles:     total,
+			CompletedFiles: checked,
+			CurrentFile:    current,
+			Percent:        float64(checked) / float64(total) * 100,
+			Message:        fmt.Sprintf("Verifying files: [%d/%d] %s", checked, total, filepath.Base(current)),
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("delta planning failed: %w", err)
+	}
+
+	neededPaths := make([]string, len(plan.FilesToSync))
+	for i, f := range plan.FilesToSync {
+		neededPaths[i] = f.RelPath
+	}
+
+	// Send delta request
+	reqBytes, _ := json.Marshal(&ControlMessage{Type: MsgRequestDelta, DeltaReq: neededPaths})
+	if err := dc.Send(reqBytes); err != nil {
+		return err
+	}
+
+	if len(plan.FilesToSync) == 0 {
+		r.updateStatus(models.SyncStats{
+			Status:           "finished",
+			Role:             "receiver",
+			Mode:             "webrtc",
+			TotalFiles:       manifest.TotalFiles,
+			CompletedFiles:   manifest.TotalFiles,
+			TotalBytes:       manifest.TotalBytes,
+			TransferredBytes: 0,
+			Percent:          100,
+			Message:          fmt.Sprintf("All %d files already match! Saved %s.", manifest.TotalFiles, models.FormatBytes(plan.SavedBytes)),
+		})
+		return nil
+	}
+
+	totalNeededFiles := len(plan.FilesToSync)
+	totalDeltaBytes := plan.SyncBytes
+	var transferredBytes int64 = 0
+
+	for fileIdx := 0; fileIdx < totalNeededFiles; fileIdx++ {
+		if atomic.LoadInt32(&r.stopped) == 1 {
+			return fmt.Errorf("transfer stopped by user")
+		}
+
+		// Wait for START_FILE
+		var startMsg ControlMessage
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case data := <-msgChan:
+			_ = json.Unmarshal(data, &startMsg)
+		}
+
+		if startMsg.Type == MsgComplete {
+			break
+		}
+		if startMsg.Type != MsgStartFile || startMsg.File == nil {
+			return fmt.Errorf("expected start file message")
+		}
+
+		curFile := startMsg.File
+		destFilePath := filepath.Join(r.destDir, filepath.FromSlash(curFile.RelPath))
+
+		// Read binary chunks until END_FILE
+		pipeReader, pipeWriter := io.Pipe()
+
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					pipeWriter.CloseWithError(ctx.Err())
+					return
+				case data := <-msgChan:
+					var checkMsg ControlMessage
+					if len(data) < 256 && json.Unmarshal(data, &checkMsg) == nil && checkMsg.Type == MsgEndFile {
+						pipeWriter.Close()
+						return
+					}
+
+					n, wErr := pipeWriter.Write(data)
+					if n > 0 {
+						transferredBytes += int64(n)
+						r.speedTracker.AddBytes(int64(n))
+
+						speed, _ := r.speedTracker.GetSpeed()
+						percent := float64(transferredBytes) / float64(totalDeltaBytes) * 100
+						if percent > 100 {
+							percent = 100
+						}
+
+						r.updateStatus(models.SyncStats{
+							Status:           "syncing",
+							Role:             "receiver",
+							Mode:             "webrtc",
+							TotalFiles:       totalNeededFiles,
+							CompletedFiles:   fileIdx,
+							TotalBytes:       totalDeltaBytes,
+							TransferredBytes: transferredBytes,
+							SpeedBytesPerSec: speed,
+							SpeedFormatted:   models.FormatSpeed(speed),
+							Percent:          percent,
+							CurrentFile:      curFile.RelPath,
+							Message:          fmt.Sprintf("P2P Syncing [%d/%d] %s (%s)", fileIdx+1, totalNeededFiles, filepath.Base(curFile.RelPath), models.FormatSpeed(speed)),
+						})
+					}
+					if wErr != nil {
+						return
+					}
+				}
+			}
+		}()
+
+		_, _, err = atomicfile.WriteAtomic(destFilePath, curFile.Hash, pipeReader)
+		if err != nil {
+			return fmt.Errorf("failed atomic write for %s: %w", curFile.RelPath, err)
+		}
+
+		// Send ACK
+		ackBytes, _ := json.Marshal(&ControlMessage{Type: MsgFileAck})
+		if err := dc.Send(ackBytes); err != nil {
+			return err
+		}
+	}
+
+	r.updateStatus(models.SyncStats{
+		Status:           "finished",
+		Role:             "receiver",
+		Mode:             "webrtc",
+		TotalFiles:       totalNeededFiles,
+		CompletedFiles:   totalNeededFiles,
+		TotalBytes:       totalDeltaBytes,
+		TransferredBytes: transferredBytes,
+		Percent:          100,
+		Message:          fmt.Sprintf("P2P Sync completed successfully (%s)! Saved %s.", models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes)),
+	})
+
+	return nil
+}
