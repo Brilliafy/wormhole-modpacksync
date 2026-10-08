@@ -11,7 +11,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
 - **Two Network Modes**:
   1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels punched through NAT using STUN servers. Share a 6-digit session code with your peer.
   2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP socket transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
-- **Folder Mirroring & Pruning (Absolute Sync)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror 1:1. Any extra or obsolete files on the receiver's side within those specific folders are automatically pruned, while non-mirrored directories and root files (such as individual files like `zeustemple.schematic`) remain untouched.
+- **Folder Mirroring & Pruning (Absolute Sync)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror 1:1. Any extra or obsolete files on the receiver's side within those specific folders are automatically pruned, while non-mirrored directories and root files (such as individual files like `options.txt`) remain untouched.
 - **Hierarchical Directory Tree & Presets**:
   - Filter and toggle files and directories to sync.
   - Per-folder **1:1 Mirror (Prune)** toggle button with visual status indicators.
