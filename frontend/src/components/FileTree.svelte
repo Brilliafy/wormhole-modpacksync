@@ -271,8 +271,9 @@
       {#if node.isDir}
         <button
           type="button"
-          onclick={() => toggleExpand(node.relPath)}
-          class="w-3.5 h-3.5 flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+          onclick={(e) => { e.stopPropagation(); toggleExpand(node.relPath); }}
+          title={expandedFolders[node.relPath] ? "Collapse" : "Expand"}
+          class="w-5 h-5 flex-shrink-0 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#22242d] rounded-[3px] cursor-pointer transition-colors"
         >
           {#if expandedFolders[node.relPath]}
             <ChevronDown class="w-3 h-3" />
@@ -281,25 +282,30 @@
           {/if}
         </button>
       {:else}
-        <span class="w-3.5"></span>
+        <span class="w-5 flex-shrink-0"></span>
       {/if}
 
-      <!-- Custom Checkbox (Crisp square) -->
+      <!-- Explicit checkbox: single click only toggles the check state -->
       <button
         type="button"
-        onclick={() => toggleCheck(node)}
-        class="w-3.5 h-3.5 rounded-[2px] border flex items-center justify-center cursor-pointer transition-colors {checkedMap[node.relPath] ? 'bg-amber-600 border-amber-500 text-black' : 'border-[#383a48] bg-[#101115] hover:border-[#525566]'}"
+        onclick={(e) => { e.stopPropagation(); toggleCheck(node); }}
+        title={checkedMap[node.relPath] ? "Uncheck" : "Check"}
+        aria-label={checkedMap[node.relPath] ? "Uncheck" : "Check"}
+        class="w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-[3px] cursor-pointer hover:bg-[#22242d] transition-colors"
       >
-        {#if checkedMap[node.relPath]}
-          <Check class="w-3 h-3 stroke-[3]" />
-        {/if}
+        <span class="w-3.5 h-3.5 rounded-[2px] border flex items-center justify-center transition-colors {checkedMap[node.relPath] ? 'bg-amber-600 border-amber-500 text-black' : 'border-[#383a48] bg-[#101115]'}">
+          {#if checkedMap[node.relPath]}
+            <Check class="w-3 h-3 stroke-[3]" />
+          {/if}
+        </span>
       </button>
 
-      <!-- Icon & Name -->
+      <!-- Icon & Name: double-click a folder to expand/collapse -->
       <button
         type="button"
         class="flex items-center gap-1.5 flex-1 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer"
-        onclick={() => node.isDir && toggleExpand(node.relPath)}
+        title={node.isDir ? "Double-click to expand or collapse" : ""}
+        ondblclick={() => node.isDir && toggleExpand(node.relPath)}
       >
         {#if node.isDir}
           <Folder class="w-3.5 h-3.5 text-amber-500/90 flex-shrink-0" />

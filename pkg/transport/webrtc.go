@@ -640,6 +640,9 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 		}()
 
 		_, _, err = atomicfile.WriteAtomic(destFilePath, curFile.Hash, pipeReader)
+		// Always close the read end so the chunk-pump goroutine cannot block
+		// forever if the write failed before the END_FILE marker arrived.
+		_ = pipeReader.Close()
 		if err != nil {
 			return fmt.Errorf("failed atomic write for %s: %w", curFile.RelPath, err)
 		}

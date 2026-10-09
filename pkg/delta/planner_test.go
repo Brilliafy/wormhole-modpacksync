@@ -84,8 +84,8 @@ func TestPlanDeltaAbsoluteSync(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(destDir, "important-root-file.txt"), []byte("do not touch me"), 0644)
 
 	manifest := &models.SyncManifest{
-		TotalFiles: 2,
-		TotalBytes: 200,
+		TotalFiles:          2,
+		TotalBytes:          200,
 		AbsoluteSyncFolders: []string{"mods", "config"},
 		Files: []models.FileInfo{
 			{

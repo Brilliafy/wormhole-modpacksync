@@ -11,21 +11,21 @@ import (
 
 // Default exclusions for Minecraft instances to avoid overwriting personal user data
 var defaultExcludedNames = map[string]bool{
-	"saves":         true,
-	"screenshots":   true,
-	"logs":          true,
-	"crash-reports": true,
-	"options.txt":   true,
-	"servers.dat":   true,
-	"usercache.json":true,
+	"saves":              true,
+	"screenshots":        true,
+	"logs":               true,
+	"crash-reports":      true,
+	"options.txt":        true,
+	"servers.dat":        true,
+	"usercache.json":     true,
 	"usernamecache.json": true,
-	".fabric":       true,
-	".forge":        true,
-	".quilt":        true,
-	".neoforge":     true,
-	".git":          true,
-	".DS_Store":     true,
-	"Thumbs.db":     true,
+	".fabric":            true,
+	".forge":             true,
+	".quilt":             true,
+	".neoforge":          true,
+	".git":               true,
+	".DS_Store":          true,
+	"Thumbs.db":          true,
 }
 
 // BuildFileTree recursively scans a directory and produces a hierarchical FileTreeNode

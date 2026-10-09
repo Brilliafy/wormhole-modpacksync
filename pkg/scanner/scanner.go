@@ -87,11 +87,11 @@ func ScanSelectedFiles(rootPath string, selectedPaths []string, absoluteSyncFold
 			}
 
 			candidateFiles = append(candidateFiles, models.FileInfo{
-				RelPath:  relSlash,
-				Size:     fi.Size(),
-				ModTime:  fi.ModTime().Unix(),
-				IsDir:    false,
-				Checked:  true,
+				RelPath: relSlash,
+				Size:    fi.Size(),
+				ModTime: fi.ModTime().Unix(),
+				IsDir:   false,
+				Checked: true,
 			})
 		}
 

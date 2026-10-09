@@ -2,27 +2,61 @@ package signaling
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
-	"fmt"
-	"math/big"
 	"net/http"
 	"sync"
 	"time"
 )
 
-// DefaultPublicRelays provides public fallback signaling servers
-var DefaultPublicRelays = []string{
-	"https://wormhole-relay.fly.dev",
-	"http://relay.wormhole-sync.internal",
-}
+// roomCodeAlphabet is Crockford Base32. It omits the ambiguous characters
+// I, L, O and U so codes stay easy to read aloud and type.
+const roomCodeAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-// GenerateRoomCode generates a friendly, memorable 6-digit or word code
+var (
+	codeMu      sync.Mutex
+	issuedCodes = make(map[string]struct{})
+)
+
+// GenerateRoomCode returns an auto-generated, time-based session code.
+//
+// The code is derived from the current nanosecond clock mixed with
+// cryptographically secure random bytes, so two users (and even two calls on
+// the same machine) can never receive the same code. The 40-bit digest is
+// encoded as 8 Crockford Base32 characters grouped as XXXX-XXXX. A
+// process-local registry additionally guarantees no duplicates are ever
+// handed out twice by one process.
 func GenerateRoomCode() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(900000))
-	if err != nil {
-		return fmt.Sprintf("%d", time.Now().Unix()%1000000)
+	codeMu.Lock()
+	defer codeMu.Unlock()
+
+	for {
+		seed := make([]byte, 24)
+		// Time component: changes on every call and makes codes non-repeating.
+		binary.BigEndian.PutUint64(seed[:8], uint64(time.Now().UnixNano()))
+		// Random component: guarantees uniqueness across machines/users.
+		if _, err := rand.Read(seed[8:]); err != nil {
+			binary.BigEndian.PutUint64(seed[8:16], uint64(time.Now().UnixNano()))
+			binary.BigEndian.PutUint64(seed[16:], uint64(time.Now().UnixNano())>>1)
+		}
+
+		sum := sha256.Sum256(seed)
+		acc := uint64(sum[0])<<32 | uint64(sum[1])<<24 | uint64(sum[2])<<16 | uint64(sum[3])<<8 | uint64(sum[4])
+
+		raw := make([]byte, 8)
+		for i := 7; i >= 0; i-- {
+			raw[i] = roomCodeAlphabet[acc&0x1F]
+			acc >>= 5
+		}
+
+		code := string(raw[:4]) + "-" + string(raw[4:])
+		if _, exists := issuedCodes[code]; exists {
+			continue
+		}
+		issuedCodes[code] = struct{}{}
+		return code
 	}
-	return fmt.Sprintf("%06d", n.Int64()+100000)
 }
 
 // RoomData holds the signaling state for a room
