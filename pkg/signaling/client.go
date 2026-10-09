@@ -16,6 +16,21 @@ type SignalingClient struct {
 	relayURL string
 }
 
+// normalizeRelayURL ensures the relay endpoint has a scheme and no trailing
+// slash. Bare "host:port" values (such as the address embedded in a session
+// code) are assumed to be plain HTTP.
+func normalizeRelayURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	u = strings.TrimRight(u, "/")
+	if u == "" {
+		return "http://127.0.0.1:42425"
+	}
+	if !strings.Contains(u, "://") {
+		u = "http://" + u
+	}
+	return u
+}
+
 // RelayURLFromEnv resolves the signaling relay endpoint. A relay must be
 // reachable by BOTH peers for NAT hole punching to work, so deployments should
 // point every client at the same shared relay (for example a self-hosted one
@@ -25,7 +40,7 @@ func RelayURLFromEnv() string {
 	if v := strings.TrimSpace(os.Getenv("WORMHOLE_RELAY")); v != "" {
 		for _, part := range strings.Split(v, ",") {
 			if u := strings.TrimSpace(part); u != "" {
-				return strings.TrimRight(u, "/")
+				return normalizeRelayURL(u)
 			}
 		}
 	}
@@ -33,14 +48,11 @@ func RelayURLFromEnv() string {
 }
 
 func NewSignalingClient(relayURL string) *SignalingClient {
-	if relayURL == "" {
-		relayURL = RelayURLFromEnv()
-	}
 	return &SignalingClient{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		relayURL: strings.TrimRight(relayURL, "/"),
+		relayURL: normalizeRelayURL(relayURL),
 	}
 }
 
