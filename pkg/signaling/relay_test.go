@@ -40,3 +40,17 @@ func TestRelayURLFromEnv(t *testing.T) {
 		t.Fatalf("expected first relay with trailing slash trimmed, got %q", got)
 	}
 }
+
+func TestSignalingClientURLNormalization(t *testing.T) {
+	cases := map[string]string{
+		"":                      "http://127.0.0.1:42425",
+		"192.168.1.5:42425":     "http://192.168.1.5:42425",
+		"http://host:1/":        "http://host:1",
+		"https://relay.example": "https://relay.example",
+	}
+	for in, want := range cases {
+		if got := NewSignalingClient(in).relayURL; got != want {
+			t.Errorf("NewSignalingClient(%q).relayURL = %q, want %q", in, got, want)
+		}
+	}
+}
