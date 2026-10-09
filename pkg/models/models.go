@@ -6,12 +6,12 @@ import (
 
 // FileInfo contains metadata and SHA-256 hash of a file
 type FileInfo struct {
-	RelPath  string `json:"relPath"`
-	Size     int64  `json:"size"`
-	ModTime  int64  `json:"modTime"`
-	Hash     string `json:"hash"`
-	IsDir    bool   `json:"isDir"`
-	Checked  bool   `json:"checked"`
+	RelPath string `json:"relPath"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	Hash    string `json:"hash"`
+	IsDir   bool   `json:"isDir"`
+	Checked bool   `json:"checked"`
 }
 
 // FileTreeNode represents a node in the hierarchical file tree for sender UI

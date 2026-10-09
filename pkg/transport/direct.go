@@ -47,11 +47,11 @@ func NewDirectSender(rootDir string, manifest *models.SyncManifest, port int, on
 	return s
 }
 
-func (s *DirectSender) Start(ctx context.Context) error {
-	addr := fmt.Sprintf("0.0.0.0:%d", s.port)
+// Listen binds the sender's TCP listener. If the requested address is busy it
+// falls back to a dynamic port. The resolved port is exposed via Port().
+func (s *DirectSender) Listen(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		// If port is occupied, try dynamic port
 		ln, err = net.Listen("tcp", "0.0.0.0:0")
 		if err != nil {
 			return fmt.Errorf("failed to listen on tcp: %w", err)
@@ -59,6 +59,16 @@ func (s *DirectSender) Start(ctx context.Context) error {
 	}
 	s.listener = ln
 	s.port = ln.Addr().(*net.TCPAddr).Port
+	return nil
+}
+
+func (s *DirectSender) Start(ctx context.Context) error {
+	if s.listener == nil {
+		if err := s.Listen(fmt.Sprintf("0.0.0.0:%d", s.port)); err != nil {
+			return err
+		}
+	}
+	ln := s.listener
 
 	s.updateStatus(models.SyncStats{
 		Status:  "waiting",

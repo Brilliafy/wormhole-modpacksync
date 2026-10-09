@@ -104,7 +104,7 @@
     soundPlayed = false;
 
     try {
-      const result = await StartSender(instanceFolder, selectedPaths, absoluteSyncFolders, networkMode, roomCode.trim());
+      const result = await StartSender(instanceFolder, selectedPaths, absoluteSyncFolders, networkMode);
       if (result) {
         roomCode = result.code;
         directAddresses = result.directAddresses || [];
@@ -232,25 +232,20 @@
 
       <!-- Code Box -->
       <div class="p-3.5 rounded-[3px] bg-[#111216] border border-[#262731] flex flex-col gap-2">
-        <label for="sender-code-input" class="text-xs text-neutral-300 font-medium flex items-center justify-between">
+        <span class="text-xs text-neutral-300 font-medium flex items-center justify-between">
           <span>Code</span>
-        </label>
+        </span>
 
         {#if !isSessionStarted}
-          <div class="relative">
-            <input
-              id="sender-code-input"
-              type="text"
-              bind:value={roomCode}
-              placeholder="Enter custom code or leave empty for random"
-              class="w-full bg-[#171820] border border-[#2a2c37] text-white placeholder-neutral-600 text-xs font-mono rounded-[3px] px-2.5 py-1.5 focus:outline-none focus:border-amber-500"
-            />
+          <div class="w-full bg-[#171820] border border-[#2a2c37] text-neutral-400 text-xs rounded-[3px] px-2.5 py-1.5 flex items-center gap-2">
+            <KeyRound class="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+            <span>A unique time-based code is generated automatically when you start.</span>
           </div>
         {:else}
           <div class="flex items-center justify-between bg-[#191a22] border border-[#2e303d] rounded-[3px] px-3.5 py-2.5">
             <div class="flex items-center gap-2.5">
               <KeyRound class="w-4 h-4 text-amber-500" />
-              <div class="font-mono text-lg font-bold tracking-widest text-white tabular-nums">
+              <div class="font-mono text-base font-bold tracking-wide text-white break-all">
                 {roomCode || "Connecting..."}
               </div>
             </div>

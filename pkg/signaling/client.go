@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -14,15 +16,31 @@ type SignalingClient struct {
 	relayURL string
 }
 
+// RelayURLFromEnv resolves the signaling relay endpoint. A relay must be
+// reachable by BOTH peers for NAT hole punching to work, so deployments should
+// point every client at the same shared relay (for example a self-hosted one
+// started with `wormhole-sync -relay`). Set WORMHOLE_RELAY to a comma-separated
+// list of URLs to override the built-in localhost fallback.
+func RelayURLFromEnv() string {
+	if v := strings.TrimSpace(os.Getenv("WORMHOLE_RELAY")); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			if u := strings.TrimSpace(part); u != "" {
+				return strings.TrimRight(u, "/")
+			}
+		}
+	}
+	return "http://127.0.0.1:42425"
+}
+
 func NewSignalingClient(relayURL string) *SignalingClient {
 	if relayURL == "" {
-		relayURL = "http://127.0.0.1:42425"
+		relayURL = RelayURLFromEnv()
 	}
 	return &SignalingClient{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		relayURL: relayURL,
+		relayURL: strings.TrimRight(relayURL, "/"),
 	}
 }
 

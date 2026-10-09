@@ -134,7 +134,7 @@
             id="room-code-input"
             type="text"
             bind:value={code}
-            placeholder={networkMode === "direct" ? "e.g. 100.115.92.3:42424" : "e.g. 849201"}
+            placeholder={networkMode === "direct" ? "e.g. 100.115.92.3:42424" : "e.g. K7X2-M9QF"}
             class="w-full bg-[#111216] border border-[#292b36] text-white placeholder-neutral-600 text-xs font-mono tracking-wider rounded-[3px] pl-9 pr-3 py-2 focus:outline-none focus:border-amber-500 transition-colors"
           />
         </div>

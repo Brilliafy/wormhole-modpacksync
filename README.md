@@ -9,7 +9,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
 - **Differential Transfer**: Only transfers new or modified files. Files with matching SHA-256 hashes are automatically skipped, saving bandwidth and transfer time.
 - **Atomic Safe Writes**: Every incoming file is streamed into a `.wormhole.tmp` file, hash-verified, and then atomically renamed into place. Connection drops or pauses will never corrupt existing instance files.
 - **Two Network Modes**:
-  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels punched through NAT using STUN servers. Share a 6-digit session code with your peer.
+  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels over STUN. An auto-generated, time-based session code (e.g. `K7X2-M9QF`) is created for you to share with your peer. On a LAN or over Tailscale the code carries the host's own embedded relay address, so it works with zero setup. For true internet NAT-to-NAT punching, run the bundled relay on a public host and point both peers at it with `WORMHOLE_RELAY`.
   2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP socket transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
 - **Folder Mirroring & Pruning (Absolute Sync)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror 1:1. Any extra or obsolete files on the receiver's side within those specific folders are automatically pruned, while non-mirrored directories and root files (such as individual files like `options.txt`) remain untouched.
 - **Hierarchical Directory Tree & Presets**:
@@ -18,8 +18,20 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
   - Built-in **Modpack Preset** that automatically enables `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `kubejs/`, `scripts/` (with 1:1 mirror on `mods/` and `config/`) while safeguarding personal player files (`saves/`, `logs/`, `screenshots/`, `options.txt`).
 - **Tactile UI Console**:
   - **Receive Mode**: Pick destination directory &rarr; Enter session code &rarr; Console locks into a precision circular gauge with centered telemetry &rarr; Completion audio notification &rarr; Close button.
-  - **Send Mode**: Choose instance &rarr; Curate directory tree &rarr; Share code/address &rarr; Start, Pause, Resume, Stop &rarr; Live progress bar &amp; speed indicator (MB/s).
+  - **Send Mode**: Choose instance &rarr; Curate directory tree (single-click a checkbox to toggle it, double-click a folder name to expand) &rarr; An auto-generated code appears when you start &rarr; Start, Pause, Resume, Stop &rarr; Live progress bar &amp; speed indicator (MB/s).
 - **Universal Audio Notification**: Zero-dependency Web Audio API harmonic chime triggers when synchronization completes.
+
+---
+
+## Network Modes
+
+- **Direct / Tailscale (recommended, works out of the box)**: The sender listens on TCP `42424` (falling back to a random port if it is busy) and advertises its Tailscale or LAN address. The receiver connects straight to it. No server required.
+- **WebRTC code (works on LAN/Tailscale by default)**: The sender shares a code of the form `K7X2-M9QF@192.168.1.20:42425`. The address after `@` is the sender's built-in signaling relay. The peers exchange SDP through it and then stream over a peer-to-peer DataChannel.
+- **WebRTC over the internet (optional)**: Two peers behind separate NATs need one shared rendezvous point. Run the relay on any public host:
+  ```
+  wormhole-sync -relay -port 42425
+  ```
+  Then set `WORMHOLE_RELAY=https://your-relay-host:42425` on both machines before launching the app. The generated code is then just the short code (no `@address`).
 
 ---
 

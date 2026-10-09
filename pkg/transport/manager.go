@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"wormhole-sync/pkg/models"
 	"wormhole-sync/pkg/scanner"
@@ -108,7 +109,7 @@ func (sm *SessionManager) GetStats() models.SyncStats {
 }
 
 // StartSenderSession prepares the sender, scans files, and launches direct or webrtc listener
-func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []string, absoluteSyncFolders []string, mode string, customCode string) (*models.SenderInitResult, error) {
+func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []string, absoluteSyncFolders []string, mode string) (*models.SenderInitResult, error) {
 	sm.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,23 +148,28 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 		return nil, err
 	}
 
-	code := customCode
-	if code == "" {
-		code = signaling.GenerateRoomCode()
-	}
+	code := signaling.GenerateRoomCode()
 
 	netInfo := sm.GetNetworkInfo()
-	directAddrs := make([]string, 0)
-	if netInfo.TailscaleIP != "" {
-		directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", netInfo.TailscaleIP, netInfo.DefaultPort))
-	}
-	for _, ip := range netInfo.LocalIPs {
-		directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", ip, netInfo.DefaultPort))
+
+	// When no shared relay is configured, use the sender's own embedded relay
+	// as the rendezvous point and advertise its address inside the shared code
+	// (form "<code>@<host:port>"). This lets code-based WebRTC work on a LAN or
+	// over Tailscale with zero extra infrastructure. With WORMHOLE_RELAY set,
+	// the plain code is used and both peers meet on the shared relay instead.
+	advertisedCode := code
+	if signaling.RelayURLFromEnv() == "http://127.0.0.1:42425" {
+		relayHost := netInfo.TailscaleIP
+		if relayHost == "" && len(netInfo.LocalIPs) > 0 {
+			relayHost = netInfo.LocalIPs[0]
+		}
+		if relayHost != "" {
+			advertisedCode = fmt.Sprintf("%s@%s:%d", code, relayHost, sm.relayPort)
+		}
 	}
 
 	result := &models.SenderInitResult{
-		Code:                code,
-		DirectAddresses:     directAddrs,
+		Code:                advertisedCode,
 		TailscaleIP:         netInfo.TailscaleIP,
 		SelectedFiles:       manifest.TotalFiles,
 		TotalBytes:          manifest.TotalBytes,
@@ -171,12 +177,27 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	}
 
 	if mode == "direct" || mode == "tailscale" {
-		// Launch Direct TCP Server
+		// Launch Direct TCP Server. Bind first so the advertised port is the
+		// real one even if the default port was busy and we fell back.
 		sm.directSender = NewDirectSender(rootDir, manifest, netInfo.DefaultPort, func(stats models.SyncStats) {
-			stats.Code = code
+			stats.Code = advertisedCode
 			stats.MirroredFolders = manifest.AbsoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
+
+		actualPort := netInfo.DefaultPort
+		if err := sm.directSender.Listen(fmt.Sprintf("0.0.0.0:%d", netInfo.DefaultPort)); err == nil {
+			actualPort = sm.directSender.Port()
+		}
+
+		directAddrs := make([]string, 0)
+		if netInfo.TailscaleIP != "" {
+			directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", netInfo.TailscaleIP, actualPort))
+		}
+		for _, ip := range netInfo.LocalIPs {
+			directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", ip, actualPort))
+		}
+		result.DirectAddresses = directAddrs
 
 		go func() {
 			err := sm.directSender.Start(ctx)
@@ -191,9 +212,18 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			}
 		}()
 	} else {
+		directAddrs := make([]string, 0)
+		if netInfo.TailscaleIP != "" {
+			directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", netInfo.TailscaleIP, netInfo.DefaultPort))
+		}
+		for _, ip := range netInfo.LocalIPs {
+			directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", ip, netInfo.DefaultPort))
+		}
+		result.DirectAddresses = directAddrs
+
 		// Launch WebRTC Hole Punch Session
 		sm.webrtcSender = NewWebRTCSender(rootDir, manifest, func(stats models.SyncStats) {
-			stats.Code = code
+			stats.Code = advertisedCode
 			stats.MirroredFolders = manifest.AbsoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
@@ -222,8 +252,8 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 				Status:  "waiting",
 				Role:    "sender",
 				Mode:    "webrtc",
-				Code:    code,
-				Message: fmt.Sprintf("Ready! Share code [%s] with your friend to connect.", code),
+				Code:    advertisedCode,
+				Message: fmt.Sprintf("Ready! Share code [%s] with your friend to connect.", advertisedCode),
 			})
 
 			// Wait for receiver's answer
@@ -273,8 +303,20 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 
 	cleanInput := strings.TrimSpace(codeOrAddr)
 
-	// Check if user input is a direct IP:Port or if mode is direct
-	isDirectAddr := strings.Contains(cleanInput, ":") || mode == "direct" || mode == "tailscale"
+	// Support the "<code>@<relayHost:port>" form so a friend can use the
+	// sender's own embedded relay as the rendezvous point when no shared relay
+	// is configured. Direct addresses never contain '@'.
+	roomCode := cleanInput
+	relayOverride := ""
+	if at := strings.Index(cleanInput, "@"); at > 0 {
+		roomCode = strings.TrimSpace(cleanInput[:at])
+		relayOverride = strings.TrimSpace(cleanInput[at+1:])
+	}
+
+	// A bare IP or an IP:port is always a direct target. Anything else is
+	// treated as a WebRTC room code. This keeps room codes working even when
+	// the app auto-selects direct mode because Tailscale is present.
+	isDirectAddr := strings.Contains(roomCode, ":") || net.ParseIP(roomCode) != nil
 
 	if isDirectAddr {
 		// Target address
@@ -302,7 +344,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 	} else {
 		// WebRTC Code Mode
 		sm.webrtcReceiver = NewWebRTCReceiver(destDir, func(stats models.SyncStats) {
-			stats.Code = cleanInput
+			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
 
@@ -311,18 +353,21 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 				Status:  "connecting",
 				Role:    "receiver",
 				Mode:    "webrtc",
-				Code:    cleanInput,
-				Message: fmt.Sprintf("Connecting using code [%s]...", cleanInput),
+				Code:    roomCode,
+				Message: fmt.Sprintf("Connecting using code [%s]...", roomCode),
 			})
 
-			sigClient := signaling.NewSignalingClient("")
-			offerSDP, directAddr, err := sigClient.FetchOffer(ctx, cleanInput)
+			sigClient := signaling.NewSignalingClient(relayOverride)
+			fetchCtx, cancelFetch := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancelFetch()
+			offerSDP, directAddr, err := sigClient.FetchOffer(fetchCtx, roomCode)
 			if err != nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
 					Role:         "receiver",
 					Mode:         "webrtc",
-					ErrorMessage: fmt.Sprintf("Failed finding session for code [%s]: %v", cleanInput, err),
+					Code:         roomCode,
+					ErrorMessage: fmt.Sprintf("Could not find a session for code [%s]. Double-check the code, or use Direct / Tailscale mode with the host's IP address. (%v)", roomCode, err),
 				})
 				return
 			}
@@ -340,7 +385,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 					return
 				}
 
-				if err := sigClient.PublishAnswer(ctx, cleanInput, answerSDP); err != nil {
+				if err := sigClient.PublishAnswer(ctx, roomCode, answerSDP); err != nil {
 					sm.UpdateStats(models.SyncStats{
 						Status:       "error",
 						Role:         "receiver",
