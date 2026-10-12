@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -39,8 +40,11 @@ func HashFile(filePath string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// HashFilesParallel computes hashes for a slice of FileInfo using a worker pool
-func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func(done int, total int, current string)) ([]models.FileInfo, error) {
+// HashFilesParallel computes hashes for a slice of FileInfo using a worker
+// pool. Files that cannot be read are dropped from the result instead of
+// silently producing an empty hash, which would poison delta planning and
+// abort the transfer later. Cancelling ctx stops hashing at the next job.
+func HashFilesParallel(ctx context.Context, rootPath string, files []models.FileInfo, onProgress func(done int, total int, current string)) ([]models.FileInfo, error) {
 	numWorkers := runtime.NumCPU()
 	if numWorkers < 2 {
 		numWorkers = 2
@@ -65,12 +69,19 @@ func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func
 
 	var wg sync.WaitGroup
 	var completedCount int64
+	var dropped int64
 
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				if result[j.index].Size == 0 {
 					result[j.index].Hash = emptySHA256
 				} else {
@@ -78,6 +89,11 @@ func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func
 					hash, err := HashFile(fullPath)
 					if err == nil {
 						result[j.index].Hash = hash
+					} else {
+						// Unreadable: mark for removal so the manifest only
+						// contains files both sides can actually transfer.
+						atomic.AddInt64(&dropped, 1)
+						result[j.index].Size = -1
 					}
 				}
 				done := int(atomic.AddInt64(&completedCount, 1))
@@ -89,5 +105,20 @@ func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func
 	}
 
 	wg.Wait()
-	return result, nil
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if dropped == 0 {
+		return result, nil
+	}
+
+	kept := make([]models.FileInfo, 0, len(result)-int(dropped))
+	for _, f := range result {
+		if f.Size >= 0 {
+			kept = append(kept, f)
+		}
+	}
+	return kept, nil
 }

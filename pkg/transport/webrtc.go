@@ -309,6 +309,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	var transferredBytes int64 = 0
 	buf := make([]byte, WebRTCChunkSize)
 	throttle := newProgressThrottle(100 * time.Millisecond)
+	skippedFiles := 0
 
 	for fileIdx, file := range filesToSend {
 		if !s.checkPause() {
@@ -318,7 +319,21 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 		fullPath := filepath.Join(s.rootDir, filepath.FromSlash(file.RelPath))
 		f, err := os.Open(fullPath)
 		if err != nil {
-			return fmt.Errorf("failed opening file %s: %w", file.RelPath, err)
+			// A file may have been deleted or locked after scanning. Skipping
+			// it beats aborting the whole sync; the receiver ends its loop on
+			// the completion message.
+			skippedFiles++
+			totalDeltaBytes -= file.Size
+			if totalDeltaBytes < 0 {
+				totalDeltaBytes = 0
+			}
+			s.updateStatus(models.SyncStats{
+				Status:  "syncing",
+				Role:    "sender",
+				Mode:    "webrtc",
+				Message: fmt.Sprintf("Skipping unreadable file %s (%v)", file.RelPath, err),
+			})
+			continue
 		}
 
 		startMsg, _ := json.Marshal(&ControlMessage{Type: MsgStartFile, File: &file})
@@ -411,16 +426,20 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	completeMsg, _ := json.Marshal(&ControlMessage{Type: MsgComplete})
 	_ = s.dataChan.Send(completeMsg)
 
+	finishMsg := fmt.Sprintf("P2P Hole-Punch sync completed (%s)! All files verified.", models.FormatBytes(transferredBytes))
+	if skippedFiles > 0 {
+		finishMsg = fmt.Sprintf("P2P sync completed (%s); skipped %d unreadable files.", models.FormatBytes(transferredBytes), skippedFiles)
+	}
 	s.updateStatus(models.SyncStats{
 		Status:           "finished",
 		Role:             "sender",
 		Mode:             "webrtc",
 		TotalFiles:       totalNeededFiles,
-		CompletedFiles:   totalNeededFiles,
+		CompletedFiles:   totalNeededFiles - skippedFiles,
 		TotalBytes:       totalDeltaBytes,
 		TransferredBytes: transferredBytes,
 		Percent:          100,
-		Message:          fmt.Sprintf("P2P Hole-Punch sync completed (%s)! All files verified.", models.FormatBytes(transferredBytes)),
+		Message:          finishMsg,
 	})
 
 	return nil
@@ -577,7 +596,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	manifest := manifestMsg.Manifest
 
 	// Plan delta
-	plan, err := delta.PlanDelta(r.destDir, manifest, func(checked, total int, current string) {
+	plan, err := delta.PlanDelta(ctx, r.destDir, manifest, func(checked, total int, current string) {
 		r.updateStatus(models.SyncStats{
 			Status:         "analyzing",
 			Role:           "receiver",
@@ -612,8 +631,9 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 			}
 			if allowed {
 				fullDelPath := filepath.Join(r.destDir, filepath.FromSlash(relDel))
-				_ = os.Remove(fullDelPath)
-				prunedCount++
+				if os.Remove(fullDelPath) == nil {
+					prunedCount++
+				}
 			}
 		}
 	}
@@ -648,6 +668,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	totalNeededFiles := len(plan.FilesToSync)
 	totalDeltaBytes := plan.SyncBytes
 	var transferredBytes int64 = 0
+	receivedFiles := 0
 
 	for fileIdx := 0; fileIdx < totalNeededFiles; fileIdx++ {
 		if atomic.LoadInt32(&r.stopped) == 1 {
@@ -735,6 +756,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 		if err := dc.Send(ackBytes); err != nil {
 			return err
 		}
+		receivedFiles++
 	}
 
 	finishMsg := fmt.Sprintf("P2P Sync completed successfully (%s)! Saved %s.", models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes))
@@ -746,7 +768,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 		Role:             "receiver",
 		Mode:             "webrtc",
 		TotalFiles:       totalNeededFiles,
-		CompletedFiles:   totalNeededFiles,
+		CompletedFiles:   receivedFiles,
 		PrunedFiles:      prunedCount,
 		TotalBytes:       totalDeltaBytes,
 		TransferredBytes: transferredBytes,

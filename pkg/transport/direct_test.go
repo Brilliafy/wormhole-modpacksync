@@ -40,6 +40,7 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dstDir, "friend-personal-options.txt"), []byte("do not delete me"), 0644)
 
 	manifest, err := scanner.ScanSelectedFiles(
+		context.Background(),
 		srcDir,
 		[]string{"mods/jei.jar", "config/jei.json", "zeustemple.schematic"},
 		[]string{"mods"}, // Only mods is marked for absolute sync

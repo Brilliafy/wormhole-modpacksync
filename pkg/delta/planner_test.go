@@ -1,6 +1,7 @@
 package delta
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -47,7 +48,7 @@ func TestPlanDelta(t *testing.T) {
 		},
 	}
 
-	plan, err := PlanDelta(destDir, manifest, nil)
+	plan, err := PlanDelta(context.Background(), destDir, manifest, nil)
 	if err != nil {
 		t.Fatalf("PlanDelta failed: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestPlanDeltaAbsoluteSync(t *testing.T) {
 		},
 	}
 
-	plan, err := PlanDelta(destDir, manifest, nil)
+	plan, err := PlanDelta(context.Background(), destDir, manifest, nil)
 	if err != nil {
 		t.Fatalf("PlanDelta failed: %v", err)
 	}

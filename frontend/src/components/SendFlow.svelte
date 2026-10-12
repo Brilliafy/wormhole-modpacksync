@@ -361,11 +361,12 @@
           </button>
         {:else if !isComplete && !isError}
           <div class="grid grid-cols-2 gap-2">
-            <!-- Pause / Resume -->
+            <!-- Pause / Resume (only meaningful during an active transfer) -->
             <button
               type="button"
               onclick={handlePauseResume}
-              class="py-2 rounded-[3px] bg-[#22242d] hover:bg-[#2b2d39] text-neutral-200 text-xs font-medium border border-[#353746] flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:translate-y-[1px]"
+              disabled={!isSyncing}
+              class="py-2 rounded-[3px] bg-[#22242d] hover:bg-[#2b2d39] text-neutral-200 text-xs font-medium border border-[#353746] flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:translate-y-[1px] disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {#if isPaused}
                 <Play class="w-3.5 h-3.5 text-emerald-400" />

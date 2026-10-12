@@ -1,6 +1,7 @@
 package delta
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,8 +18,9 @@ import (
 // and determines which files actually need to be downloaded vs which already match.
 // If manifest has AbsoluteSyncFolders, it also detects extra local files in those folders for deletion.
 // Local files are verified in parallel with a bounded worker pool, so receivers
-// with large instances do not sit through a serial hashing pass.
-func PlanDelta(destDir string, manifest *models.SyncManifest, onProgress func(checked int, total int, current string)) (*models.DeltaPlan, error) {
+// with large instances do not sit through a serial hashing pass. Cancelling
+// ctx aborts verification at the next job.
+func PlanDelta(ctx context.Context, destDir string, manifest *models.SyncManifest, onProgress func(checked int, total int, current string)) (*models.DeltaPlan, error) {
 	plan := &models.DeltaPlan{
 		FilesToSync:   make([]models.FileInfo, 0),
 		FilesUpToDate: make([]models.FileInfo, 0),
@@ -45,7 +47,7 @@ func PlanDelta(destDir string, manifest *models.SyncManifest, onProgress func(ch
 	emitInterval := int64(100 * time.Millisecond)
 
 	progress := func(current string) {
-		if onProgress == nil {
+		if onProgress == nil || total == 0 {
 			return
 		}
 		done := int(atomic.AddInt64(&completed, 1))
@@ -71,6 +73,9 @@ func PlanDelta(destDir string, manifest *models.SyncManifest, onProgress func(ch
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				file := manifest.Files[i]
 
 				localPath := filepath.Join(destDir, filepath.FromSlash(file.RelPath))
@@ -111,6 +116,10 @@ func PlanDelta(destDir string, manifest *models.SyncManifest, onProgress func(ch
 	}
 	wg.Wait()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Build the plan in manifest order so the transfer sequence is
 	// deterministic no matter how the workers interleaved.
 	for i, file := range manifest.Files {
@@ -123,7 +132,7 @@ func PlanDelta(destDir string, manifest *models.SyncManifest, onProgress func(ch
 		}
 	}
 
-	if onProgress != nil {
+	if onProgress != nil && total > 0 {
 		onProgress(total, total, "")
 	}
 

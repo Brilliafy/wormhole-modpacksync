@@ -281,6 +281,7 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 	buf := make([]byte, ChunkSize)
 	throttle := newProgressThrottle(100 * time.Millisecond)
 
+	skippedFiles := 0
 	for fileIdx, file := range filesToSend {
 		if !s.checkPause() {
 			return fmt.Errorf("transfer stopped by user")
@@ -289,7 +290,22 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 		fullPath := filepath.Join(s.rootDir, filepath.FromSlash(file.RelPath))
 		f, err := os.Open(fullPath)
 		if err != nil {
-			return fmt.Errorf("failed opening file %s: %w", file.RelPath, err)
+			// A file may have been deleted or locked after scanning. Skipping
+			// it beats aborting the whole sync; the receiver simply never
+			// receives its START_FILE and the completion message ends the loop.
+			skippedFiles++
+			totalDeltaBytes -= file.Size
+			if totalDeltaBytes < 0 {
+				totalDeltaBytes = 0
+			}
+			s.updateStatus(models.SyncStats{
+				Status:      "syncing",
+				Role:        "sender",
+				Mode:        "direct",
+				PeerAddress: peerAddr,
+				Message:     fmt.Sprintf("Skipping unreadable file %s (%v)", file.RelPath, err),
+			})
+			continue
 		}
 
 		// Send START_FILE
@@ -298,7 +314,6 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 			return err
 		}
 
-		var fileTransferred int64 = 0
 		for {
 			if !s.checkPause() {
 				f.Close()
@@ -318,7 +333,6 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 					return err
 				}
 
-				fileTransferred += int64(n)
 				transferredBytes += int64(n)
 				s.speedTracker.AddBytes(int64(n))
 
@@ -382,17 +396,21 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 	// Notify completed
 	_ = WriteFramedJSON(conn, &ControlMessage{Type: MsgComplete})
 
+	finishMsg := fmt.Sprintf("Finished syncing %d files (%s) successfully!", totalNeededFiles-skippedFiles, models.FormatBytes(transferredBytes))
+	if skippedFiles > 0 {
+		finishMsg = fmt.Sprintf("Finished syncing %d files (%s); skipped %d unreadable.", totalNeededFiles-skippedFiles, models.FormatBytes(transferredBytes), skippedFiles)
+	}
 	s.updateStatus(models.SyncStats{
 		Status:           "finished",
 		Role:             "sender",
 		Mode:             "direct",
 		PeerAddress:      peerAddr,
 		TotalFiles:       totalNeededFiles,
-		CompletedFiles:   totalNeededFiles,
+		CompletedFiles:   totalNeededFiles - skippedFiles,
 		TotalBytes:       totalDeltaBytes,
 		TransferredBytes: transferredBytes,
 		Percent:          100,
-		Message:          fmt.Sprintf("Finished syncing %d files (%s) successfully!", totalNeededFiles, models.FormatBytes(transferredBytes)),
+		Message:          finishMsg,
 	})
 
 	return nil
@@ -438,8 +456,12 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		Message: fmt.Sprintf("Connecting to %s...", r.addr),
 	})
 
+	// Bound the dial so a wrong or unreachable address fails with a clear
+	// error instead of hanging on TCP SYN retries for minutes.
+	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDial()
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", r.addr)
+	conn, err := d.DialContext(dialCtx, "tcp", r.addr)
 	if err != nil {
 		r.updateStatus(models.SyncStats{
 			Status:       "error",
@@ -482,7 +504,7 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 	})
 
 	// Plan delta
-	plan, err := delta.PlanDelta(r.destDir, manifest, func(checked, total int, current string) {
+	plan, err := delta.PlanDelta(ctx, r.destDir, manifest, func(checked, total int, current string) {
 		r.updateStatus(models.SyncStats{
 			Status:         "analyzing",
 			Role:           "receiver",
@@ -518,8 +540,9 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 			}
 			if allowed {
 				fullDelPath := filepath.Join(r.destDir, filepath.FromSlash(relDel))
-				_ = os.Remove(fullDelPath)
-				prunedCount++
+				if os.Remove(fullDelPath) == nil {
+					prunedCount++
+				}
 			}
 		}
 	}
@@ -557,6 +580,7 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 	totalNeededFiles := len(plan.FilesToSync)
 	totalDeltaBytes := plan.SyncBytes
 	var transferredBytes int64 = 0
+	receivedFiles := 0
 	throttle := newProgressThrottle(100 * time.Millisecond)
 
 	r.updateStatus(models.SyncStats{
@@ -634,6 +658,7 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgFileAck}); err != nil {
 			return err
 		}
+		receivedFiles++
 	}
 
 	// Final complete message
@@ -647,7 +672,7 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		Mode:             "direct",
 		PeerAddress:      peerAddr,
 		TotalFiles:       totalNeededFiles,
-		CompletedFiles:   totalNeededFiles,
+		CompletedFiles:   receivedFiles,
 		PrunedFiles:      prunedCount,
 		TotalBytes:       totalDeltaBytes,
 		TransferredBytes: transferredBytes,

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Folder, KeyRound, Download, X, AlertCircle, ArrowLeft, CheckCircle2, CopyCheck, Trash2 } from "@lucide/svelte";
+  import { Folder, KeyRound, Download, X, AlertCircle, ArrowLeft, CheckCircle2, CopyCheck, Trash2, Square } from "@lucide/svelte";
   import ProgressRing from "./ProgressRing.svelte";
-  import { SelectFolder, StartReceiver } from "../../wailsjs/go/main/App";
+  import { SelectFolder, StartReceiver, Stop as WailsStop } from "../../wailsjs/go/main/App";
   import type { models } from "../../wailsjs/go/models";
   import { playCompletionSound, playErrorSound } from "../lib/sound";
   import { formatBytes } from "../lib/format";
@@ -20,11 +20,23 @@
   let localError = $state("");
   let soundPlayed = $state(false);
 
-  // Check if transfer has started
+  // Check if transfer has started. A "stopped" session returns to the setup
+  // form so the user can retry; errors and finished sessions stay locked on
+  // their result panel with a Close button.
   let isLocked = $derived(
     isConnectingOrSyncing ||
-    (currentStats.status !== "idle" && currentStats.role === "receiver")
+    (currentStats.role === "receiver" &&
+      ["connecting", "waiting", "scanning", "analyzing", "syncing", "paused", "finished"].includes(currentStats.status))
   );
+
+  async function handleStop() {
+    try {
+      await WailsStop();
+    } catch (e) {
+      console.warn("Stop error:", e);
+    }
+    isConnectingOrSyncing = false;
+  }
 
   let isComplete = $derived(currentStats.status === "finished" && currentStats.role === "receiver");
   let isError = $derived(currentStats.status === "error" && currentStats.role === "receiver");
@@ -140,6 +152,14 @@
         </div>
       </div>
 
+      <!-- Backend errors (e.g. failed dial, bad code) -->
+      {#if !isLocked && currentStats.errorMessage}
+        <div class="mb-4 p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2">
+          <AlertCircle class="w-4 h-4 flex-shrink-0 text-rose-400" />
+          <span>{currentStats.errorMessage}</span>
+        </div>
+      {/if}
+
       <!-- Errors -->
       {#if localError}
         <div class="mb-4 p-2.5 rounded-[3px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-center gap-2">
@@ -223,6 +243,18 @@
             </div>
           {/if}
         </div>
+
+        <!-- Stop Button while a transfer is running -->
+        {#if !isComplete && !isError}
+          <button
+            type="button"
+            onclick={handleStop}
+            class="w-full py-2 rounded-[3px] bg-[#2a1315] hover:bg-[#381a1d] text-rose-300 text-xs font-medium border border-[#521c20] flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:translate-y-[1px]"
+          >
+            <Square class="w-3.5 h-3.5" />
+            <span>Stop</span>
+          </button>
+        {/if}
 
         <!-- Close Button -->
         {#if isComplete || isError}

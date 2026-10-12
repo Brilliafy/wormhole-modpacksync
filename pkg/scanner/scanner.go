@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,9 @@ import (
 	"wormhole-sync/pkg/models"
 )
 
-// ScanSelectedFiles gathers selected files from rootPath, filters them, hashes them, and builds a SyncManifest
-func ScanSelectedFiles(rootPath string, selectedPaths []string, absoluteSyncFolders []string, onProgress func(done int, total int, current string)) (*models.SyncManifest, error) {
+// ScanSelectedFiles gathers selected files from rootPath, filters them, hashes them, and builds a SyncManifest.
+// Cancelling ctx aborts hashing early instead of grinding through the whole selection.
+func ScanSelectedFiles(ctx context.Context, rootPath string, selectedPaths []string, absoluteSyncFolders []string, onProgress func(done int, total int, current string)) (*models.SyncManifest, error) {
 	selectedSet := make(map[string]bool)
 	for _, p := range selectedPaths {
 		norm := filepath.ToSlash(filepath.Clean(p))
@@ -103,7 +105,7 @@ func ScanSelectedFiles(rootPath string, selectedPaths []string, absoluteSyncFold
 	}
 
 	// Compute hashes in parallel
-	hashedFiles, err := HashFilesParallel(rootPath, candidateFiles, onProgress)
+	hashedFiles, err := HashFilesParallel(ctx, rootPath, candidateFiles, onProgress)
 	if err != nil {
 		return nil, err
 	}

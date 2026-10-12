@@ -26,7 +26,7 @@ func TestWebRTCSignalingAndTransfer(t *testing.T) {
 	content := []byte("webrtc hole punch verification payload 0123456789")
 	_ = os.WriteFile(filepath.Join(srcDir, "mods", "punch.jar"), content, 0644)
 
-	manifest, err := scanner.ScanSelectedFiles(srcDir, []string{"mods/punch.jar"}, nil, nil)
+	manifest, err := scanner.ScanSelectedFiles(context.Background(), srcDir, []string{"mods/punch.jar"}, nil, nil)
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
