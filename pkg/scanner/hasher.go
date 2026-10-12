@@ -13,7 +13,16 @@ import (
 	"wormhole-sync/pkg/models"
 )
 
-// HashFile computes the SHA-256 hash of a file using a 64KB buffer
+// emptySHA256 is the SHA-256 digest of a zero-byte file. Zero-size files are
+// extremely common in modpack instances (placeholder files), and hashing them
+// through the generic path wastes syscalls on every scan.
+var emptySHA256 = func() string {
+	sum := sha256.Sum256(nil)
+	return hex.EncodeToString(sum[:])
+}()
+
+// HashFile computes the SHA-256 hash of a file using a 1MB buffer, which is
+// large enough to keep modern disks and NVMe drives saturated.
 func HashFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -22,7 +31,7 @@ func HashFile(filePath string) (string, error) {
 	defer file.Close()
 
 	hasher := sha256.New()
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, 1024*1024)
 	if _, err := io.CopyBuffer(hasher, file, buf); err != nil {
 		return "", err
 	}
@@ -36,8 +45,8 @@ func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func
 	if numWorkers < 2 {
 		numWorkers = 2
 	}
-	if numWorkers > 16 {
-		numWorkers = 16
+	if numWorkers > 32 {
+		numWorkers = 32
 	}
 
 	total := len(files)
@@ -62,10 +71,14 @@ func HashFilesParallel(rootPath string, files []models.FileInfo, onProgress func
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				fullPath := filepath.Join(rootPath, filepath.FromSlash(result[j.index].RelPath))
-				hash, err := HashFile(fullPath)
-				if err == nil {
-					result[j.index].Hash = hash
+				if result[j.index].Size == 0 {
+					result[j.index].Hash = emptySHA256
+				} else {
+					fullPath := filepath.Join(rootPath, filepath.FromSlash(result[j.index].RelPath))
+					hash, err := HashFile(fullPath)
+					if err == nil {
+						result[j.index].Hash = hash
+					}
 				}
 				done := int(atomic.AddInt64(&completedCount, 1))
 				if onProgress != nil {

@@ -7,6 +7,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
 ## Technical Features
 
 - **Differential Transfer**: Only transfers new or modified files. Files with matching SHA-256 hashes are automatically skipped, saving bandwidth and transfer time.
+- **Fast Scanning & Instant Codes**: The directory tree is walked in parallel and the share code is generated the moment you press Start, while hashing continues in the background. A peer can connect while hashing is still running and the manifest is delivered as soon as it is ready.
 - **Atomic Safe Writes**: Every incoming file is streamed into a `.wormhole.tmp` file, hash-verified, and then atomically renamed into place. Connection drops or pauses will never corrupt existing instance files.
 - **Two Network Modes**:
   1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels over STUN. An auto-generated, time-based session code (e.g. `K7X2-M9QF`) is created for you to share with your peer. On a LAN or over Tailscale the code carries the host's own embedded relay address, so it works with zero setup. For true internet NAT-to-NAT punching, run the bundled relay on a public host and point both peers at it with `WORMHOLE_RELAY`.

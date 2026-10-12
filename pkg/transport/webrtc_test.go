@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"wormhole-sync/pkg/models"
 	"wormhole-sync/pkg/scanner"
 	"wormhole-sync/pkg/signaling"
 )
@@ -36,7 +37,7 @@ func TestWebRTCSignalingAndTransfer(t *testing.T) {
 	server := httptest.NewServer(relay.Handler())
 	defer server.Close()
 
-	sender := NewWebRTCSender(srcDir, manifest, nil)
+	sender := NewWebRTCSender(srcDir, func() *models.SyncManifest { return manifest }, nil)
 	offer, err := sender.CreateOffer()
 	if err != nil {
 		t.Fatalf("create offer failed: %v", err)
