@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 	"wormhole-sync/pkg/atomicfile"
 	"wormhole-sync/pkg/delta"
@@ -46,6 +47,26 @@ type WebRTCSender struct {
 	pauseCond    *sync.Cond
 	pauseMu      sync.Mutex
 	onProgress   func(models.SyncStats)
+	openChan     chan struct{}
+	msgChan      chan []byte
+	openOnce     sync.Once
+}
+
+// iceServers returns the STUN servers plus an optional TURN server taken from
+// WORMHOLE_TURN_URL / WORMHOLE_TURN_USERNAME / WORMHOLE_TURN_CREDENTIAL. TURN
+// is the only reliable fallback for symmetric NATs that STUN cannot punch.
+func iceServers() []webrtc.ICEServer {
+	servers := make([]webrtc.ICEServer, len(DefaultICEServers))
+	copy(servers, DefaultICEServers)
+	turnURLs := strings.TrimSpace(os.Getenv("WORMHOLE_TURN_URL"))
+	if turnURLs != "" {
+		servers = append(servers, webrtc.ICEServer{
+			URLs:       strings.Split(turnURLs, ","),
+			Username:   os.Getenv("WORMHOLE_TURN_USERNAME"),
+			Credential: os.Getenv("WORMHOLE_TURN_CREDENTIAL"),
+		})
+	}
+	return servers
 }
 
 func NewWebRTCSender(rootDir string, manifest *models.SyncManifest, onProgress func(models.SyncStats)) *WebRTCSender {
@@ -59,17 +80,35 @@ func NewWebRTCSender(rootDir string, manifest *models.SyncManifest, onProgress f
 	return s
 }
 
+// newPeerConnection builds a PeerConnection with app-wide ICE tuning applied.
+func newPeerConnection(cfg webrtc.Configuration) (*webrtc.PeerConnection, error) {
+	settingEngine := webrtc.SettingEngine{}
+	// Real IPs beat mDNS .local names for desktop-to-desktop transfers: mDNS
+	// resolution silently fails on networks that filter multicast traffic.
+	settingEngine.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
+	return api.NewPeerConnection(cfg)
+}
+
 // CreateOffer initializes the WebRTC connection and returns base64-encoded offer with ICE candidates gathered
 func (s *WebRTCSender) CreateOffer() (string, error) {
-	config := webrtc.Configuration{
-		ICEServers: DefaultICEServers,
-	}
-
-	pc, err := webrtc.NewPeerConnection(config)
+	pc, err := newPeerConnection(webrtc.Configuration{ICEServers: iceServers()})
 	if err != nil {
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
 	}
 	s.peerConn = pc
+
+	// Surface NAT traversal failures instead of hanging forever.
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		if state == webrtc.ICEConnectionStateFailed {
+			s.updateStatus(models.SyncStats{
+				Status:       "error",
+				Role:         "sender",
+				Mode:         "webrtc",
+				ErrorMessage: "NAT traversal failed (ICE). Try Direct / Tailscale mode, or configure a TURN server via WORMHOLE_TURN_URL.",
+			})
+		}
+	})
 
 	dc, err := pc.CreateDataChannel("wormhole-sync", nil)
 	if err != nil {
@@ -77,6 +116,17 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 		return "", fmt.Errorf("failed to create data channel: %w", err)
 	}
 	s.dataChan = dc
+
+	// Register channel callbacks BEFORE negotiation so a fast connection can
+	// never be missed by a late StartSession call.
+	s.openChan = make(chan struct{})
+	s.msgChan = make(chan []byte, 256)
+	dc.OnOpen(func() {
+		s.openOnce.Do(func() { close(s.openChan) })
+	})
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		s.msgChan <- msg.Data
+	})
 
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
@@ -166,16 +216,9 @@ func (s *WebRTCSender) updateStatus(stats models.SyncStats) {
 
 // StartSession waits for DataChannel open and coordinates file sync
 func (s *WebRTCSender) StartSession(ctx context.Context) error {
-	openChan := make(chan struct{})
-	msgChan := make(chan []byte, 100)
-
-	s.dataChan.OnOpen(func() {
-		close(openChan)
-	})
-
-	s.dataChan.OnMessage(func(msg webrtc.DataChannelMessage) {
-		msgChan <- msg.Data
-	})
+	if s.dataChan == nil || s.openChan == nil || s.msgChan == nil {
+		return fmt.Errorf("data channel not initialised: call CreateOffer first")
+	}
 
 	s.updateStatus(models.SyncStats{
 		Status:  "waiting",
@@ -187,7 +230,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-openChan:
+	case <-s.openChan:
 	}
 
 	s.updateStatus(models.SyncStats{
@@ -209,7 +252,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case data := <-msgChan:
+	case data := <-s.msgChan:
 		if err := json.Unmarshal(data, &deltaMsg); err != nil || deltaMsg.Type != MsgRequestDelta {
 			return fmt.Errorf("unexpected message waiting for delta request: %v", err)
 		}
@@ -275,6 +318,10 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 
 			// Backpressure check: wait if buffered amount is high
 			for s.dataChan.BufferedAmount() > 1024*1024 {
+				if atomic.LoadInt32(&s.stopped) == 1 {
+					f.Close()
+					return fmt.Errorf("transfer stopped by user")
+				}
 				time.Sleep(10 * time.Millisecond)
 			}
 
@@ -330,7 +377,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case data := <-msgChan:
+		case data := <-s.msgChan:
 			var ack ControlMessage
 			_ = json.Unmarshal(data, &ack)
 			if ack.Type != MsgFileAck {
@@ -364,6 +411,10 @@ type WebRTCReceiver struct {
 	speedTracker *SpeedTracker
 	onProgress   func(models.SyncStats)
 	stopped      int32
+	dcChan       chan *webrtc.DataChannel
+	openChan     chan struct{}
+	msgChan      chan []byte
+	openOnce     sync.Once
 }
 
 func NewWebRTCReceiver(destDir string, onProgress func(models.SyncStats)) *WebRTCReceiver {
@@ -386,15 +437,38 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 		return "", fmt.Errorf("invalid json offer: %w", err)
 	}
 
-	config := webrtc.Configuration{
-		ICEServers: DefaultICEServers,
-	}
-
-	pc, err := webrtc.NewPeerConnection(config)
+	pc, err := newPeerConnection(webrtc.Configuration{ICEServers: iceServers()})
 	if err != nil {
 		return "", err
 	}
 	r.peerConn = pc
+
+	// Register handlers BEFORE negotiation so no event is ever missed.
+	r.dcChan = make(chan *webrtc.DataChannel, 1)
+	r.openChan = make(chan struct{})
+	r.msgChan = make(chan []byte, 256)
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		dc.OnOpen(func() {
+			r.openOnce.Do(func() { close(r.openChan) })
+		})
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			r.msgChan <- msg.Data
+		})
+		select {
+		case r.dcChan <- dc:
+		default:
+		}
+	})
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		if state == webrtc.ICEConnectionStateFailed {
+			r.updateStatus(models.SyncStats{
+				Status:       "error",
+				Role:         "receiver",
+				Mode:         "webrtc",
+				ErrorMessage: "NAT traversal failed (ICE). Try Direct / Tailscale mode with the host's IP address, or configure a TURN server via WORMHOLE_TURN_URL.",
+			})
+		}
+	})
 
 	if err := pc.SetRemoteDescription(offer); err != nil {
 		pc.Close()
@@ -437,11 +511,9 @@ func (r *WebRTCReceiver) updateStatus(stats models.SyncStats) {
 }
 
 func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
-	dcChan := make(chan *webrtc.DataChannel, 1)
-
-	r.peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
-		dcChan <- dc
-	})
+	if r.dcChan == nil || r.openChan == nil || r.msgChan == nil {
+		return fmt.Errorf("data channel not initialised: call CreateAnswer first")
+	}
 
 	r.updateStatus(models.SyncStats{
 		Status:  "waiting",
@@ -454,24 +526,13 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case dc = <-dcChan:
+	case dc = <-r.dcChan:
 	}
-
-	openChan := make(chan struct{})
-	msgChan := make(chan []byte, 100)
-
-	dc.OnOpen(func() {
-		close(openChan)
-	})
-
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		msgChan <- msg.Data
-	})
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-openChan:
+	case <-r.openChan:
 	}
 
 	r.updateStatus(models.SyncStats{
@@ -486,7 +547,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case data := <-msgChan:
+	case data := <-r.msgChan:
 		if err := json.Unmarshal(data, &manifestMsg); err != nil || manifestMsg.Type != MsgManifest {
 			return fmt.Errorf("expected manifest message, got: %v", err)
 		}
@@ -576,7 +637,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case data := <-msgChan:
+		case data := <-r.msgChan:
 			_ = json.Unmarshal(data, &startMsg)
 		}
 
@@ -599,7 +660,7 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 				case <-ctx.Done():
 					pipeWriter.CloseWithError(ctx.Err())
 					return
-				case data := <-msgChan:
+				case data := <-r.msgChan:
 					var checkMsg ControlMessage
 					if len(data) < 256 && json.Unmarshal(data, &checkMsg) == nil && checkMsg.Type == MsgEndFile {
 						pipeWriter.Close()

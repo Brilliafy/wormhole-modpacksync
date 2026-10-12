@@ -32,6 +32,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
   wormhole-sync -relay -port 42425
   ```
   Then set `WORMHOLE_RELAY=https://your-relay-host:42425` on both machines before launching the app. The generated code is then just the short code (no `@address`).
+- **Strict NATs**: if hole punching fails on both sides, set `WORMHOLE_TURN_URL` (plus `WORMHOLE_TURN_USERNAME` and `WORMHOLE_TURN_CREDENTIAL`) on both machines to relay WebRTC through a TURN server. The app reports an ICE failure with this hint instead of hanging.
 
 ---
 

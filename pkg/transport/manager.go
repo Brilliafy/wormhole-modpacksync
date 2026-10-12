@@ -246,7 +246,16 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			if len(directAddrs) > 0 {
 				directHint = directAddrs[0]
 			}
-			_ = sigClient.PublishOffer(ctx, code, offerSDP, directHint)
+			if err := sigClient.PublishOffer(ctx, code, offerSDP, directHint); err != nil {
+				sm.UpdateStats(models.SyncStats{
+					Status:       "error",
+					Role:         "sender",
+					Mode:         "webrtc",
+					Code:         advertisedCode,
+					ErrorMessage: fmt.Sprintf("Could not reach the signaling relay: %v. Use Direct / Tailscale mode, or set WORMHOLE_RELAY to a relay both peers can reach.", err),
+				})
+				return
+			}
 
 			sm.UpdateStats(models.SyncStats{
 				Status:  "waiting",
@@ -294,6 +303,19 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	return result, nil
 }
 
+// parseReceiverInput splits the receiver's input into a room code, an optional
+// "<code>@<host:port>" relay override, and whether the input targets a direct
+// address (a bare IP or an IP:port). Room codes never contain ':' or '@'.
+func parseReceiverInput(input string) (roomCode string, relayOverride string, isDirect bool) {
+	roomCode = strings.TrimSpace(input)
+	if at := strings.Index(roomCode, "@"); at > 0 {
+		relayOverride = strings.TrimSpace(roomCode[at+1:])
+		roomCode = strings.TrimSpace(roomCode[:at])
+	}
+	isDirect = strings.Contains(roomCode, ":") || net.ParseIP(roomCode) != nil
+	return roomCode, relayOverride, isDirect
+}
+
 // StartReceiverSession connects to the sender using code or direct address
 func (sm *SessionManager) StartReceiverSession(destDir string, mode string, codeOrAddr string) error {
 	sm.Reset()
@@ -301,32 +323,17 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 	ctx, cancel := context.WithCancel(context.Background())
 	sm.cancelFunc = cancel
 
-	cleanInput := strings.TrimSpace(codeOrAddr)
-
-	// Support the "<code>@<relayHost:port>" form so a friend can use the
-	// sender's own embedded relay as the rendezvous point when no shared relay
-	// is configured. Direct addresses never contain '@'.
-	roomCode := cleanInput
-	relayOverride := ""
-	if at := strings.Index(cleanInput, "@"); at > 0 {
-		roomCode = strings.TrimSpace(cleanInput[:at])
-		relayOverride = strings.TrimSpace(cleanInput[at+1:])
-	}
-
-	// A bare IP or an IP:port is always a direct target. Anything else is
-	// treated as a WebRTC room code. This keeps room codes working even when
-	// the app auto-selects direct mode because Tailscale is present.
-	isDirectAddr := strings.Contains(roomCode, ":") || net.ParseIP(roomCode) != nil
+	roomCode, relayOverride, isDirectAddr := parseReceiverInput(codeOrAddr)
 
 	if isDirectAddr {
 		// Target address
-		addr := cleanInput
+		addr := roomCode
 		if !strings.Contains(addr, ":") {
 			addr = fmt.Sprintf("%s:42424", addr)
 		}
 
 		sm.directReceiver = NewDirectReceiver(destDir, addr, func(stats models.SyncStats) {
-			stats.Code = cleanInput
+			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
 
@@ -406,7 +413,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 			} else if directAddr != "" {
 				// Fallback to direct address discovered via signaling
 				sm.directReceiver = NewDirectReceiver(destDir, directAddr, func(stats models.SyncStats) {
-					stats.Code = cleanInput
+					stats.Code = roomCode
 					sm.UpdateStats(stats)
 				})
 				_ = sm.directReceiver.Start(ctx)
