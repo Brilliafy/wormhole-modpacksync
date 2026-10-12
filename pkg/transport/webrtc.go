@@ -36,20 +36,20 @@ var DefaultICEServers = []webrtc.ICEServer{
 
 // WebRTCSender handles P2P file sync over WebRTC DataChannels
 type WebRTCSender struct {
-	mu           sync.Mutex
-	peerConn     *webrtc.PeerConnection
-	dataChan     *webrtc.DataChannel
-	manifest     *models.SyncManifest
-	rootDir      string
-	speedTracker *SpeedTracker
-	paused       int32
-	stopped      int32
-	pauseCond    *sync.Cond
-	pauseMu      sync.Mutex
-	onProgress   func(models.SyncStats)
-	openChan     chan struct{}
-	msgChan      chan []byte
-	openOnce     sync.Once
+	mu               sync.Mutex
+	peerConn         *webrtc.PeerConnection
+	dataChan         *webrtc.DataChannel
+	manifestProvider func() *models.SyncManifest
+	rootDir          string
+	speedTracker     *SpeedTracker
+	paused           int32
+	stopped          int32
+	pauseCond        *sync.Cond
+	pauseMu          sync.Mutex
+	onProgress       func(models.SyncStats)
+	openChan         chan struct{}
+	msgChan          chan []byte
+	openOnce         sync.Once
 }
 
 // iceServers returns the STUN servers plus an optional TURN server taken from
@@ -69,12 +69,15 @@ func iceServers() []webrtc.ICEServer {
 	return servers
 }
 
-func NewWebRTCSender(rootDir string, manifest *models.SyncManifest, onProgress func(models.SyncStats)) *WebRTCSender {
+// NewWebRTCSender creates a sender. The manifest is fetched through
+// manifestProvider when the data channel opens, so the offer can be published
+// and the share code shown while background hashing is still running.
+func NewWebRTCSender(rootDir string, manifestProvider func() *models.SyncManifest, onProgress func(models.SyncStats)) *WebRTCSender {
 	s := &WebRTCSender{
-		rootDir:      rootDir,
-		manifest:     manifest,
-		speedTracker: NewSpeedTracker(),
-		onProgress:   onProgress,
+		rootDir:          rootDir,
+		manifestProvider: manifestProvider,
+		speedTracker:     NewSpeedTracker(),
+		onProgress:       onProgress,
 	}
 	s.pauseCond = sync.NewCond(&s.pauseMu)
 	return s
@@ -240,8 +243,21 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 		Message: "Direct P2P DataChannel established! Exchanging manifest...",
 	})
 
+	// Fetch the manifest. The provider blocks until background hashing
+	// finishes, so offer publication and code display are never delayed by it.
+	s.updateStatus(models.SyncStats{
+		Status:  "analyzing",
+		Role:    "sender",
+		Mode:    "webrtc",
+		Message: "Finishing file preparation (hashing)...",
+	})
+	manifest := s.manifestProvider()
+	if manifest == nil {
+		return fmt.Errorf("manifest preparation failed or was cancelled")
+	}
+
 	// Send manifest
-	manifestMsg := &ControlMessage{Type: MsgManifest, Manifest: s.manifest}
+	manifestMsg := &ControlMessage{Type: MsgManifest, Manifest: manifest}
 	manifestBytes, _ := json.Marshal(manifestMsg)
 	if err := s.dataChan.Send(manifestBytes); err != nil {
 		return err
@@ -265,7 +281,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 
 	filesToSend := make([]models.FileInfo, 0)
 	var totalDeltaBytes int64 = 0
-	for _, f := range s.manifest.Files {
+	for _, f := range manifest.Files {
 		if neededPaths[f.RelPath] {
 			filesToSend = append(filesToSend, f)
 			totalDeltaBytes += f.Size
@@ -280,9 +296,9 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 			Status:           "finished",
 			Role:             "sender",
 			Mode:             "webrtc",
-			TotalFiles:       s.manifest.TotalFiles,
-			CompletedFiles:   s.manifest.TotalFiles,
-			TotalBytes:       s.manifest.TotalBytes,
+			TotalFiles:       manifest.TotalFiles,
+			CompletedFiles:   manifest.TotalFiles,
+			TotalBytes:       manifest.TotalBytes,
 			TransferredBytes: 0,
 			Percent:          100,
 			Message:          "All files already identical! P2P sync complete.",
@@ -292,6 +308,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 
 	var transferredBytes int64 = 0
 	buf := make([]byte, WebRTCChunkSize)
+	throttle := newProgressThrottle(100 * time.Millisecond)
 
 	for fileIdx, file := range filesToSend {
 		if !s.checkPause() {
@@ -334,6 +351,11 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 
 				transferredBytes += int64(n)
 				s.speedTracker.AddBytes(int64(n))
+
+				// Rate-limit UI events to at most 10 per second.
+				if !throttle.allow() && readErr != io.EOF {
+					continue
+				}
 
 				speed, _ := s.speedTracker.GetSpeed()
 				percent := float64(transferredBytes) / float64(totalDeltaBytes) * 100

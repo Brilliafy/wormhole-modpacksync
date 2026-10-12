@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"wormhole-sync/pkg/atomicfile"
 	"wormhole-sync/pkg/delta"
@@ -21,27 +22,31 @@ const ChunkSize = 64 * 1024
 
 // DirectSender runs a TCP server waiting for the receiver to connect
 type DirectSender struct {
-	mu           sync.Mutex
-	listener     net.Listener
-	conn         net.Conn
-	port         int
-	manifest     *models.SyncManifest
-	rootDir      string
-	speedTracker *SpeedTracker
-	paused       int32
-	stopped      int32
-	pauseCond    *sync.Cond
-	pauseMu      sync.Mutex
-	onProgress   func(stats models.SyncStats)
+	mu               sync.Mutex
+	listener         net.Listener
+	conn             net.Conn
+	port             int
+	manifestProvider func() *models.SyncManifest
+	rootDir          string
+	speedTracker     *SpeedTracker
+	paused           int32
+	stopped          int32
+	pauseCond        *sync.Cond
+	pauseMu          sync.Mutex
+	onProgress       func(stats models.SyncStats)
 }
 
-func NewDirectSender(rootDir string, manifest *models.SyncManifest, port int, onProgress func(models.SyncStats)) *DirectSender {
+// NewDirectSender creates a sender. The manifest is fetched through
+// manifestProvider at the moment the peer handshake completes, which lets the
+// TCP listener bind and the share code appear while files are still being
+// hashed in the background.
+func NewDirectSender(rootDir string, manifestProvider func() *models.SyncManifest, port int, onProgress func(models.SyncStats)) *DirectSender {
 	s := &DirectSender{
-		rootDir:      rootDir,
-		manifest:     manifest,
-		port:         port,
-		speedTracker: NewSpeedTracker(),
-		onProgress:   onProgress,
+		rootDir:          rootDir,
+		manifestProvider: manifestProvider,
+		port:             port,
+		speedTracker:     NewSpeedTracker(),
+		onProgress:       onProgress,
 	}
 	s.pauseCond = sync.NewCond(&s.pauseMu)
 	return s
@@ -57,24 +62,31 @@ func (s *DirectSender) Listen(addr string) error {
 			return fmt.Errorf("failed to listen on tcp: %w", err)
 		}
 	}
+	s.mu.Lock()
 	s.listener = ln
 	s.port = ln.Addr().(*net.TCPAddr).Port
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *DirectSender) Start(ctx context.Context) error {
+	s.mu.Lock()
 	if s.listener == nil {
+		s.mu.Unlock()
 		if err := s.Listen(fmt.Sprintf("0.0.0.0:%d", s.port)); err != nil {
 			return err
 		}
+		s.mu.Lock()
 	}
 	ln := s.listener
+	port := s.port
+	s.mu.Unlock()
 
 	s.updateStatus(models.SyncStats{
 		Status:  "waiting",
 		Role:    "sender",
 		Mode:    "direct",
-		Message: fmt.Sprintf("Waiting for friend to connect on port %d...", s.port),
+		Message: fmt.Sprintf("Waiting for friend to connect on port %d...", port),
 	})
 
 	// Wait for receiver connection
@@ -97,7 +109,9 @@ func (s *DirectSender) Start(ctx context.Context) error {
 	case err := <-errChan:
 		return err
 	case conn := <-connChan:
+		s.mu.Lock()
 		s.conn = conn
+		s.mu.Unlock()
 		defer conn.Close()
 		defer ln.Close()
 		return s.handleSenderSession(ctx, conn)
@@ -105,6 +119,8 @@ func (s *DirectSender) Start(ctx context.Context) error {
 }
 
 func (s *DirectSender) Port() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.port
 }
 
@@ -133,11 +149,15 @@ func (s *DirectSender) Stop() {
 	atomic.StoreInt32(&s.stopped, 1)
 	atomic.StoreInt32(&s.paused, 0)
 	s.pauseCond.Broadcast()
-	if s.conn != nil {
-		_ = s.conn.Close()
+	s.mu.Lock()
+	conn := s.conn
+	listener := s.listener
+	s.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
-	if s.listener != nil {
-		_ = s.listener.Close()
+	if listener != nil {
+		_ = listener.Close()
 	}
 }
 
@@ -179,8 +199,21 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 		return fmt.Errorf("failed peer hello handshake: %v", err)
 	}
 
-	// Send Manifest
-	if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgManifest, Manifest: s.manifest}); err != nil {
+	// Send Manifest. The provider blocks until background hashing finishes,
+	// so the listener and share code are live while scanning still runs.
+	s.updateStatus(models.SyncStats{
+		Status:      "analyzing",
+		Role:        "sender",
+		Mode:        "direct",
+		PeerAddress: peerAddr,
+		Message:     "Finishing file preparation (hashing)...",
+	})
+	manifest := s.manifestProvider()
+	if manifest == nil {
+		return fmt.Errorf("manifest preparation failed or was cancelled")
+	}
+
+	if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgManifest, Manifest: manifest}); err != nil {
 		return err
 	}
 
@@ -205,7 +238,7 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 
 	filesToSend := make([]models.FileInfo, 0)
 	var totalDeltaBytes int64 = 0
-	for _, f := range s.manifest.Files {
+	for _, f := range manifest.Files {
 		if neededPaths[f.RelPath] {
 			filesToSend = append(filesToSend, f)
 			totalDeltaBytes += f.Size
@@ -221,9 +254,9 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 			Role:             "sender",
 			Mode:             "direct",
 			PeerAddress:      peerAddr,
-			TotalFiles:       s.manifest.TotalFiles,
-			CompletedFiles:   s.manifest.TotalFiles,
-			TotalBytes:       s.manifest.TotalBytes,
+			TotalFiles:       manifest.TotalFiles,
+			CompletedFiles:   manifest.TotalFiles,
+			TotalBytes:       manifest.TotalBytes,
 			TransferredBytes: 0,
 			Percent:          100,
 			Message:          "All files were already up-to-date! Delta sync complete.",
@@ -246,6 +279,7 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 
 	var transferredBytes int64 = 0
 	buf := make([]byte, ChunkSize)
+	throttle := newProgressThrottle(100 * time.Millisecond)
 
 	for fileIdx, file := range filesToSend {
 		if !s.checkPause() {
@@ -287,6 +321,17 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 				fileTransferred += int64(n)
 				transferredBytes += int64(n)
 				s.speedTracker.AddBytes(int64(n))
+
+				// Rate-limit UI events: only emit at most 10 per second, or
+				// immediately when a file completes.
+				fileDone := readErr == io.EOF
+				if !throttle.allow() && !fileDone {
+					if readErr != nil && readErr != io.EOF {
+						f.Close()
+						return readErr
+					}
+					continue
+				}
 
 				speed, _ := s.speedTracker.GetSpeed()
 				percent := float64(transferredBytes) / float64(totalDeltaBytes) * 100
@@ -512,6 +557,7 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 	totalNeededFiles := len(plan.FilesToSync)
 	totalDeltaBytes := plan.SyncBytes
 	var transferredBytes int64 = 0
+	throttle := newProgressThrottle(100 * time.Millisecond)
 
 	r.updateStatus(models.SyncStats{
 		Status:           "syncing",
@@ -552,6 +598,10 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 			speedTracker: r.speedTracker,
 			onProgress: func(bytesRead int) {
 				transferredBytes += int64(bytesRead)
+				// Rate-limit UI events to at most 10 per second.
+				if !throttle.allow() {
+					return
+				}
 				speed, _ := r.speedTracker.GetSpeed()
 				percent := float64(transferredBytes) / float64(totalDeltaBytes) * 100
 				if percent > 100 {

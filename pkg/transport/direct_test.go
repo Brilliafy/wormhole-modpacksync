@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"wormhole-sync/pkg/models"
 	"wormhole-sync/pkg/scanner"
 )
 
@@ -52,7 +53,7 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	sender := NewDirectSender(srcDir, manifest, 0, nil)
+	sender := NewDirectSender(srcDir, func() *models.SyncManifest { return manifest }, 0, nil)
 
 	var senderErr error
 	var receiverErr error

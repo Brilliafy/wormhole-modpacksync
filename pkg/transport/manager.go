@@ -108,48 +108,17 @@ func (sm *SessionManager) GetStats() models.SyncStats {
 	return sm.currentStats
 }
 
-// StartSenderSession prepares the sender, scans files, and launches direct or webrtc listener
+// StartSenderSession launches the network listener and generates the share
+// code immediately, then hashes the selected files in the background. The
+// share code is available within milliseconds of hitting Start; the manifest
+// is delivered to the peer only once hashing completes.
 func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []string, absoluteSyncFolders []string, mode string) (*models.SenderInitResult, error) {
 	sm.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sm.cancelFunc = cancel
 
-	sm.UpdateStats(models.SyncStats{
-		Status:          "scanning",
-		Role:            "sender",
-		Mode:            mode,
-		Message:         "Scanning instance directory and hashing selected files...",
-		MirroredFolders: absoluteSyncFolders,
-	})
-
-	// Scan and hash files
-	manifest, err := scanner.ScanSelectedFiles(rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
-		sm.UpdateStats(models.SyncStats{
-			Status:          "scanning",
-			Role:            "sender",
-			Mode:            mode,
-			TotalFiles:      total,
-			CompletedFiles:  done,
-			CurrentFile:     current,
-			Percent:         float64(done) / float64(total) * 100,
-			Message:         fmt.Sprintf("Hashing files: [%d/%d] %s", done, total, current),
-			MirroredFolders: absoluteSyncFolders,
-		})
-	})
-	if err != nil {
-		sm.UpdateStats(models.SyncStats{
-			Status:          "error",
-			Role:            "sender",
-			Mode:            mode,
-			ErrorMessage:    fmt.Sprintf("Failed to scan directory: %v", err),
-			MirroredFolders: absoluteSyncFolders,
-		})
-		return nil, err
-	}
-
 	code := signaling.GenerateRoomCode()
-
 	netInfo := sm.GetNetworkInfo()
 
 	// When no shared relay is configured, use the sender's own embedded relay
@@ -169,19 +138,88 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	}
 
 	result := &models.SenderInitResult{
-		Code:                advertisedCode,
-		TailscaleIP:         netInfo.TailscaleIP,
-		SelectedFiles:       manifest.TotalFiles,
-		TotalBytes:          manifest.TotalBytes,
-		AbsoluteSyncFolders: manifest.AbsoluteSyncFolders,
+		Code:        advertisedCode,
+		TailscaleIP: netInfo.TailscaleIP,
 	}
 
+	// Hash progress is throttled: emitting one Wails event per file floods
+	// the WebView on instances with tens of thousands of files.
+	progressThrottle := newProgressThrottle(100 * time.Millisecond)
+	var progressMu sync.Mutex
+
+	// Manifest preparation. The provider hands the finished manifest to the
+	// transport layer whenever the peer handshake happens; if the peer
+	// connects first, the transport waits for hashing to complete.
+	var manifest *models.SyncManifest
+	ready := make(chan struct{})
+	provider := func() *models.SyncManifest {
+		<-ready
+		return manifest
+	}
+
+	go func() {
+		defer close(ready)
+
+		m, err := scanner.ScanSelectedFiles(rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			if !progressThrottle.allow() && done != total {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			sm.UpdateStats(models.SyncStats{
+				Status:          "scanning",
+				Role:            "sender",
+				Mode:            mode,
+				Code:            advertisedCode,
+				TotalFiles:      total,
+				CompletedFiles:  done,
+				CurrentFile:     current,
+				Percent:         float64(done) / float64(total) * 100,
+				Message:         fmt.Sprintf("Hashing files: [%d/%d] %s", done, total, current),
+				MirroredFolders: absoluteSyncFolders,
+			})
+		})
+
+		manifest = m
+		if err != nil {
+			if ctx.Err() == nil {
+				sm.UpdateStats(models.SyncStats{
+					Status:          "error",
+					Role:            "sender",
+					Mode:            mode,
+					Code:            advertisedCode,
+					ErrorMessage:    fmt.Sprintf("Failed to scan directory: %v", err),
+					MirroredFolders: absoluteSyncFolders,
+				})
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// NOTE: result was already returned to the caller; file counts reach
+		// the UI through the stats event below instead of mutating it here.
+		sm.UpdateStats(models.SyncStats{
+			Status:          "waiting",
+			Role:            "sender",
+			Mode:            mode,
+			Code:            advertisedCode,
+			TotalFiles:      m.TotalFiles,
+			TotalBytes:      m.TotalBytes,
+			MirroredFolders: absoluteSyncFolders,
+			Message:         fmt.Sprintf("Ready to send %d files (%s). Waiting for friend to connect...", m.TotalFiles, models.FormatBytes(m.TotalBytes)),
+		})
+	}()
+
 	if mode == "direct" || mode == "tailscale" {
-		// Launch Direct TCP Server. Bind first so the advertised port is the
-		// real one even if the default port was busy and we fell back.
-		sm.directSender = NewDirectSender(rootDir, manifest, netInfo.DefaultPort, func(stats models.SyncStats) {
+		// Launch Direct TCP Server. Bind immediately so the advertised port is
+		// known and the share code can be shown right away.
+		sm.directSender = NewDirectSender(rootDir, provider, netInfo.DefaultPort, func(stats models.SyncStats) {
 			stats.Code = advertisedCode
-			stats.MirroredFolders = manifest.AbsoluteSyncFolders
+			stats.MirroredFolders = absoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
 
@@ -199,15 +237,18 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 		}
 		result.DirectAddresses = directAddrs
 
+		directSender := sm.directSender
 		go func() {
-			err := sm.directSender.Start(ctx)
+			// Local capture: Reset() may nil out sm.directSender while this
+			// goroutine is still pending, which would crash here.
+			err := directSender.Start(ctx)
 			if err != nil && ctx.Err() == nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:          "error",
 					Role:            "sender",
 					Mode:            "direct",
 					ErrorMessage:    err.Error(),
-					MirroredFolders: manifest.AbsoluteSyncFolders,
+					MirroredFolders: absoluteSyncFolders,
 				})
 			}
 		}()
@@ -222,25 +263,30 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 		result.DirectAddresses = directAddrs
 
 		// Launch WebRTC Hole Punch Session
-		sm.webrtcSender = NewWebRTCSender(rootDir, manifest, func(stats models.SyncStats) {
+		webrtcSender := NewWebRTCSender(rootDir, provider, func(stats models.SyncStats) {
 			stats.Code = advertisedCode
-			stats.MirroredFolders = manifest.AbsoluteSyncFolders
+			stats.MirroredFolders = absoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
+		sm.webrtcSender = webrtcSender
 
 		go func() {
-			offerSDP, err := sm.webrtcSender.CreateOffer()
+			// Local capture: Reset() may nil out sm.webrtcSender while this
+			// goroutine is still pending, which would crash here.
+			offerSDP, err := webrtcSender.CreateOffer()
 			if err != nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
 					Role:         "sender",
 					Mode:         "webrtc",
+					Code:         advertisedCode,
 					ErrorMessage: fmt.Sprintf("WebRTC offer failed: %v", err),
 				})
 				return
 			}
 
-			// Publish to embedded signaling relay
+			// Publish to the signaling relay so the receiver can answer as
+			// soon as it wants; hashing does not gate the handshake.
 			sigClient := signaling.NewSignalingClient("")
 			directHint := ""
 			if len(directAddrs) > 0 {
@@ -279,7 +325,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 				return
 			}
 
-			if err := sm.webrtcSender.SetAnswer(answerSDP); err != nil {
+			if err := webrtcSender.SetAnswer(answerSDP); err != nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
 					Role:         "sender",
@@ -289,7 +335,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 				return
 			}
 
-			if err := sm.webrtcSender.StartSession(ctx); err != nil && ctx.Err() == nil {
+			if err := webrtcSender.StartSession(ctx); err != nil && ctx.Err() == nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
 					Role:         "sender",
@@ -332,13 +378,16 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 			addr = fmt.Sprintf("%s:42424", addr)
 		}
 
-		sm.directReceiver = NewDirectReceiver(destDir, addr, func(stats models.SyncStats) {
+		directReceiver := NewDirectReceiver(destDir, addr, func(stats models.SyncStats) {
 			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
+		sm.directReceiver = directReceiver
 
 		go func() {
-			err := sm.directReceiver.Start(ctx)
+			// Local capture: Reset() may nil out sm.directReceiver while
+			// this goroutine is still pending, which would crash here.
+			err := directReceiver.Start(ctx)
 			if err != nil && ctx.Err() == nil {
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
@@ -350,10 +399,11 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 		}()
 	} else {
 		// WebRTC Code Mode
-		sm.webrtcReceiver = NewWebRTCReceiver(destDir, func(stats models.SyncStats) {
+		webrtcReceiver := NewWebRTCReceiver(destDir, func(stats models.SyncStats) {
 			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
+		sm.webrtcReceiver = webrtcReceiver
 
 		go func() {
 			sm.UpdateStats(models.SyncStats{
@@ -381,7 +431,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 
 			// If offerSDP is available, use WebRTC hole punch
 			if offerSDP != "" {
-				answerSDP, err := sm.webrtcReceiver.CreateAnswer(offerSDP)
+				answerSDP, err := webrtcReceiver.CreateAnswer(offerSDP)
 				if err != nil {
 					sm.UpdateStats(models.SyncStats{
 						Status:       "error",
@@ -402,7 +452,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 					return
 				}
 
-				if err := sm.webrtcReceiver.StartSession(ctx); err != nil && ctx.Err() == nil {
+				if err := webrtcReceiver.StartSession(ctx); err != nil && ctx.Err() == nil {
 					sm.UpdateStats(models.SyncStats{
 						Status:       "error",
 						Role:         "receiver",
@@ -412,11 +462,12 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 				}
 			} else if directAddr != "" {
 				// Fallback to direct address discovered via signaling
-				sm.directReceiver = NewDirectReceiver(destDir, directAddr, func(stats models.SyncStats) {
+				fallbackReceiver := NewDirectReceiver(destDir, directAddr, func(stats models.SyncStats) {
 					stats.Code = roomCode
 					sm.UpdateStats(stats)
 				})
-				_ = sm.directReceiver.Start(ctx)
+				sm.directReceiver = fallbackReceiver
+				_ = fallbackReceiver.Start(ctx)
 			}
 		}()
 	}

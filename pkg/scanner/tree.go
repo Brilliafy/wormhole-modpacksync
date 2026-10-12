@@ -3,8 +3,10 @@ package scanner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"wormhole-sync/pkg/models"
 )
@@ -28,10 +30,12 @@ var defaultExcludedNames = map[string]bool{
 	"Thumbs.db":          true,
 }
 
-// BuildFileTree recursively scans a directory and produces a hierarchical FileTreeNode
+// BuildFileTree recursively scans a directory and produces a hierarchical
+// FileTreeNode. Directories are walked in parallel with a bounded worker pool,
+// which makes large instances (tens of thousands of files) scan dramatically
+// faster than a sequential walk.
 func BuildFileTree(rootPath string) (*models.FileTreeNode, error) {
-	info, err := os.Stat(rootPath)
-	if err != nil {
+	if _, err := os.Stat(rootPath); err != nil {
 		return nil, err
 	}
 
@@ -45,91 +49,97 @@ func BuildFileTree(rootPath string) (*models.FileTreeNode, error) {
 		Name:     rootName,
 		RelPath:  "",
 		IsDir:    true,
-		Size:     info.Size(),
 		Checked:  true,
 		Children: make([]*models.FileTreeNode, 0),
 	}
 
-	dirMap := make(map[string]*models.FileTreeNode)
-	dirMap[""] = rootNode
-
-	err = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // Skip unreadable entries gracefully
-		}
-
-		if path == rootPath {
-			return nil
-		}
-
-		rel, err := filepath.Rel(rootPath, path)
-		if err != nil {
-			return nil
-		}
-
-		// Normalize slash for cross-platform compatibility
-		relSlash := filepath.ToSlash(rel)
-		name := d.Name()
-
-		// Skip hidden dotfiles like .git
-		if strings.HasPrefix(name, ".") && name != ".minecraft" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		parentRel := filepath.ToSlash(filepath.Dir(rel))
-		if parentRel == "." {
-			parentRel = ""
-		}
-
-		parentNode, ok := dirMap[parentRel]
-		if !ok {
-			parentNode = rootNode
-		}
-
-		// Determine default checked state
-		firstComponent := strings.Split(relSlash, "/")[0]
-		checked := true
-		if defaultExcludedNames[strings.ToLower(name)] || defaultExcludedNames[strings.ToLower(firstComponent)] {
-			checked = false
-		}
-
-		absSync := false
-		if d.IsDir() {
-			lowerName := strings.ToLower(name)
-			if lowerName == "mods" || lowerName == "config" {
-				absSync = true
-			}
-		}
-
-		node := &models.FileTreeNode{
-			ID:           relSlash,
-			Name:         name,
-			RelPath:      relSlash,
-			IsDir:        d.IsDir(),
-			Checked:      checked,
-			AbsoluteSync: absSync,
-			Children:     make([]*models.FileTreeNode, 0),
-		}
-
-		if !d.IsDir() {
-			fi, err := d.Info()
-			if err == nil {
-				node.Size = fi.Size()
-			}
-		} else {
-			dirMap[relSlash] = node
-		}
-
-		parentNode.Children = append(parentNode.Children, node)
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
+	workers := runtime.NumCPU() * 2
+	if workers < 4 {
+		workers = 4
 	}
+	sem := make(chan struct{}, workers)
+
+	var wg sync.WaitGroup
+	var walkDir func(dirAbs, dirRel string, node *models.FileTreeNode)
+
+	// walkDir fills node.Children. Every node is written only by the
+	// goroutine that owns it, so no extra locking is needed. Each level waits
+	// for its direct child directories, and those wait for their own children,
+	// so by the time the top-level call returns the whole tree is complete.
+	walkDir = func(dirAbs, dirRel string, node *models.FileTreeNode) {
+		defer wg.Done()
+
+		entries, err := os.ReadDir(dirAbs)
+		if err != nil {
+			return // Unreadable directories are skipped gracefully
+		}
+
+		children := make([]*models.FileTreeNode, 0, len(entries))
+		firstComponent := dirRel
+		if idx := strings.Index(dirRel, "/"); idx >= 0 {
+			firstComponent = dirRel[:idx]
+		}
+
+		for _, entry := range entries {
+			name := entry.Name()
+
+			// Skip hidden dotfiles like .git (except .minecraft)
+			if strings.HasPrefix(name, ".") && name != ".minecraft" {
+				continue
+			}
+
+			childRel := name
+			if dirRel != "" {
+				childRel = dirRel + "/" + name
+			}
+
+			checked := true
+			lowerName := strings.ToLower(name)
+			if defaultExcludedNames[lowerName] || defaultExcludedNames[strings.ToLower(firstComponent)] {
+				checked = false
+			}
+
+			if entry.IsDir() {
+				child := &models.FileTreeNode{
+					ID:           childRel,
+					Name:         name,
+					RelPath:      childRel,
+					IsDir:        true,
+					Checked:      checked,
+					AbsoluteSync: lowerName == "mods" || lowerName == "config",
+					Children:     make([]*models.FileTreeNode, 0),
+				}
+				children = append(children, child)
+
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(c *models.FileTreeNode, abs string) {
+					defer func() { <-sem }()
+					walkDir(abs, c.RelPath, c)
+				}(child, filepath.Join(dirAbs, name))
+				continue
+			}
+
+			fi, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			children = append(children, &models.FileTreeNode{
+				ID:      childRel,
+				Name:    name,
+				RelPath: childRel,
+				IsDir:   false,
+				Size:    fi.Size(),
+				Checked: checked,
+			})
+		}
+
+		node.Children = children
+	}
+
+	wg.Add(1)
+	walkDir(rootPath, "", rootNode)
+	wg.Wait()
 
 	// Sort children (directories first, then alphabetically) and compute directory sizes
 	sortAndComputeSizes(rootNode)
