@@ -48,13 +48,24 @@ func NewSessionManager(onStatsUpdate func(models.SyncStats)) *SessionManager {
 
 func (sm *SessionManager) startEmbeddedRelay() {
 	sm.embeddedRelay = signaling.NewEmbeddedRelayServer()
-	sm.relayServer = &http.Server{
-		Addr:    fmt.Sprintf("0.0.0.0:%d", sm.relayPort),
-		Handler: sm.embeddedRelay.Handler(),
+	handler := sm.embeddedRelay.Handler()
+
+	// Bind the default port, falling back to a dynamic one if it is taken by
+	// another instance. Advertising a port the relay never bound would break
+	// code-based WebRTC entirely, so the resolved port is recorded.
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", sm.relayPort))
+	if err != nil {
+		ln, err = net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			sm.embeddedRelay = nil
+			return
+		}
 	}
+	sm.relayPort = ln.Addr().(*net.TCPAddr).Port
+	sm.relayServer = &http.Server{Handler: handler}
 
 	go func() {
-		_ = sm.relayServer.ListenAndServe()
+		_ = sm.relayServer.Serve(ln)
 	}()
 }
 
@@ -116,7 +127,9 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	sm.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	sm.mu.Lock()
 	sm.cancelFunc = cancel
+	sm.mu.Unlock()
 
 	code := signaling.GenerateRoomCode()
 	netInfo := sm.GetNetworkInfo()
@@ -160,7 +173,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	go func() {
 		defer close(ready)
 
-		m, err := scanner.ScanSelectedFiles(rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
+		m, err := scanner.ScanSelectedFiles(ctx, rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
 			progressMu.Lock()
 			defer progressMu.Unlock()
 			if !progressThrottle.allow() && done != total {
@@ -217,15 +230,18 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	if mode == "direct" || mode == "tailscale" {
 		// Launch Direct TCP Server. Bind immediately so the advertised port is
 		// known and the share code can be shown right away.
-		sm.directSender = NewDirectSender(rootDir, provider, netInfo.DefaultPort, func(stats models.SyncStats) {
+		directSender := NewDirectSender(rootDir, provider, netInfo.DefaultPort, func(stats models.SyncStats) {
 			stats.Code = advertisedCode
 			stats.MirroredFolders = absoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
+		sm.mu.Lock()
+		sm.directSender = directSender
+		sm.mu.Unlock()
 
 		actualPort := netInfo.DefaultPort
-		if err := sm.directSender.Listen(fmt.Sprintf("0.0.0.0:%d", netInfo.DefaultPort)); err == nil {
-			actualPort = sm.directSender.Port()
+		if err := directSender.Listen(fmt.Sprintf("0.0.0.0:%d", netInfo.DefaultPort)); err == nil {
+			actualPort = directSender.Port()
 		}
 
 		directAddrs := make([]string, 0)
@@ -237,7 +253,6 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 		}
 		result.DirectAddresses = directAddrs
 
-		directSender := sm.directSender
 		go func() {
 			// Local capture: Reset() may nil out sm.directSender while this
 			// goroutine is still pending, which would crash here.
@@ -268,7 +283,9 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			stats.MirroredFolders = absoluteSyncFolders
 			sm.UpdateStats(stats)
 		})
+		sm.mu.Lock()
 		sm.webrtcSender = webrtcSender
+		sm.mu.Unlock()
 
 		go func() {
 			// Local capture: Reset() may nil out sm.webrtcSender while this
@@ -367,7 +384,9 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 	sm.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	sm.mu.Lock()
 	sm.cancelFunc = cancel
+	sm.mu.Unlock()
 
 	roomCode, relayOverride, isDirectAddr := parseReceiverInput(codeOrAddr)
 
@@ -382,7 +401,9 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
+		sm.mu.Lock()
 		sm.directReceiver = directReceiver
+		sm.mu.Unlock()
 
 		go func() {
 			// Local capture: Reset() may nil out sm.directReceiver while
@@ -403,7 +424,9 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 			stats.Code = roomCode
 			sm.UpdateStats(stats)
 		})
+		sm.mu.Lock()
 		sm.webrtcReceiver = webrtcReceiver
+		sm.mu.Unlock()
 
 		go func() {
 			sm.UpdateStats(models.SyncStats{
@@ -466,7 +489,9 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 					stats.Code = roomCode
 					sm.UpdateStats(stats)
 				})
+				sm.mu.Lock()
 				sm.directReceiver = fallbackReceiver
+				sm.mu.Unlock()
 				_ = fallbackReceiver.Start(ctx)
 			}
 		}()
@@ -476,48 +501,80 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 }
 
 func (sm *SessionManager) Pause() {
-	if sm.directSender != nil {
-		sm.directSender.Pause()
+	// Field reads must hold sm.mu: StartSenderSession/Reset mutate them
+	// concurrently.
+	sm.mu.Lock()
+	directSender := sm.directSender
+	webrtcSender := sm.webrtcSender
+	sm.mu.Unlock()
+	if directSender != nil {
+		directSender.Pause()
 	}
-	if sm.webrtcSender != nil {
-		sm.webrtcSender.Pause()
+	if webrtcSender != nil {
+		webrtcSender.Pause()
 	}
 }
 
 func (sm *SessionManager) Resume() {
-	if sm.directSender != nil {
-		sm.directSender.Resume()
+	sm.mu.Lock()
+	directSender := sm.directSender
+	webrtcSender := sm.webrtcSender
+	sm.mu.Unlock()
+	if directSender != nil {
+		directSender.Resume()
 	}
-	if sm.webrtcSender != nil {
-		sm.webrtcSender.Resume()
+	if webrtcSender != nil {
+		webrtcSender.Resume()
 	}
 }
 
 func (sm *SessionManager) Stop() {
-	if sm.cancelFunc != nil {
-		sm.cancelFunc()
+	if sm.stopActive() {
+		sm.UpdateStats(models.SyncStats{
+			Status:  "stopped",
+			Message: "Transfer stopped.",
+		})
 	}
-	if sm.directSender != nil {
-		sm.directSender.Stop()
+}
+
+// stopActive cancels the session context and tears down transports without
+// emitting a stats event. It reports whether a session was actually running.
+// Reset uses this so starting a new session does not flash a stale "stopped"
+// status at the UI.
+func (sm *SessionManager) stopActive() bool {
+	sm.mu.Lock()
+	cancelFunc := sm.cancelFunc
+	directSender := sm.directSender
+	webrtcSender := sm.webrtcSender
+	directReceiver := sm.directReceiver
+	webrtcReceiver := sm.webrtcReceiver
+	sm.mu.Unlock()
+
+	active := cancelFunc != nil || directSender != nil || webrtcSender != nil ||
+		directReceiver != nil || webrtcReceiver != nil
+
+	if cancelFunc != nil {
+		cancelFunc()
 	}
-	if sm.webrtcSender != nil {
-		sm.webrtcSender.Stop()
+	if directSender != nil {
+		directSender.Stop()
 	}
-	if sm.directReceiver != nil {
-		sm.directReceiver.Stop()
+	if webrtcSender != nil {
+		webrtcSender.Stop()
 	}
-	if sm.webrtcReceiver != nil {
-		sm.webrtcReceiver.Stop()
+	if directReceiver != nil {
+		directReceiver.Stop()
 	}
-	sm.UpdateStats(models.SyncStats{
-		Status:  "stopped",
-		Message: "Transfer stopped.",
-	})
+	if webrtcReceiver != nil {
+		webrtcReceiver.Stop()
+	}
+	return active
 }
 
 func (sm *SessionManager) Reset() {
-	sm.Stop()
+	sm.stopActive()
 	sm.mu.Lock()
+	sm.cancelFunc = nil
 	sm.directSender = nil
 	sm.webrtcSender = nil
 	sm.directReceiver = nil

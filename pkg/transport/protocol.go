@@ -65,7 +65,7 @@ func ReadFramedJSON(r io.Reader) (*ControlMessage, error) {
 	}
 
 	length := binary.BigEndian.Uint32(lenBuf)
-	if length > 50*1024*1024 { // 50MB safety limit for control message
+	if length > 128*1024*1024 { // 128MB safety limit; manifests for huge instances can exceed 50MB
 		return nil, fmt.Errorf("message too large: %d bytes", length)
 	}
 
