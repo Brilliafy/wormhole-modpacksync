@@ -31,6 +31,9 @@
     }
   }
 
+  // Initialise maps ONLY when a new tree arrives. This effect must never read
+  // checkedMap or absoluteSyncMap: if it did, every user toggle would re-run
+  // it and wipe the selection back to the tree defaults.
   $effect(() => {
     if (rootNode) {
       initMaps(rootNode);
@@ -42,7 +45,6 @@
           }
         }
       }
-      notifySelection();
     }
   });
 
@@ -54,7 +56,6 @@
   function toggleCheck(node: models.FileTreeNode) {
     const nextState = !checkedMap[node.relPath];
     setNodeCheckRecursive(node, nextState);
-    notifySelection();
   }
 
   function setNodeCheckRecursive(node: models.FileTreeNode, state: boolean) {
@@ -68,7 +69,6 @@
 
   function toggleAbsoluteSync(relPath: string) {
     absoluteSyncMap[relPath] = !absoluteSyncMap[relPath];
-    notifySelection();
   }
 
   function applyMinecraftPreset() {
@@ -101,14 +101,12 @@
 
     if (rootNode) {
       applyRecursive(rootNode);
-      notifySelection();
     }
   }
 
   function selectAll(state: boolean) {
     if (rootNode) {
       setNodeCheckRecursive(rootNode, state);
-      notifySelection();
     }
   }
 
@@ -140,11 +138,17 @@
     return list;
   }
 
-  function notifySelection() {
-    if (onSelectionChange) {
-      onSelectionChange(getSelectedFilePaths(), getAbsoluteSyncFolders());
-    }
-  }
+  // Notify the parent whenever the selection changes. Only this derived value
+  // is read by the effect below, so checkbox toggles can never re-trigger the
+  // tree initialisation effect above (which was resetting every selection).
+  let selection = $derived.by(() => ({
+    files: getSelectedFilePaths(),
+    folders: getAbsoluteSyncFolders(),
+  }));
+
+  $effect(() => {
+    onSelectionChange?.(selection.files, selection.folders);
+  });
 
   // Calculate selected files and size stats
   let selectionStats = $derived.by(() => {
