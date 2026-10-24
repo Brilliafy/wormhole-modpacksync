@@ -20,7 +20,7 @@ func TestScanSelectedFilesCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel before hashing starts
 
-	_, err := ScanSelectedFiles(ctx, src, nil, nil, nil)
+	_, err := ScanSelectedFiles(ctx, src, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected cancellation error, got nil")
 	}

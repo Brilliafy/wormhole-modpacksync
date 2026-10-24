@@ -207,7 +207,7 @@ func TestScanSelectedFilesAcceptsWholeFolder(t *testing.T) {
 		}
 	}
 
-	m, err := ScanSelectedFiles(context.Background(), src, []string{"mods/big"}, nil, nil)
+	m, err := ScanSelectedFiles(context.Background(), src, []string{"mods/big"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ScanSelectedFiles failed: %v", err)
 	}
