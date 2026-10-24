@@ -16,14 +16,17 @@ type FileInfo struct {
 
 // FileTreeNode represents a node in the hierarchical file tree for sender UI
 type FileTreeNode struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	RelPath      string          `json:"relPath"`
-	IsDir        bool            `json:"isDir"`
-	Size         int64           `json:"size"`
-	Checked      bool            `json:"checked"`
-	AbsoluteSync bool            `json:"absoluteSync"` // If true on a directory, extra files on receiver will be pruned
-	Children     []*FileTreeNode `json:"children,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	RelPath      string `json:"relPath"`
+	IsDir        bool   `json:"isDir"`
+	Size         int64  `json:"size"`
+	Checked      bool   `json:"checked"`
+	AbsoluteSync bool   `json:"absoluteSync"` // If true on a directory, extra files on receiver will be pruned
+	// Truncated marks a directory whose contents were not scanned (too deep,
+	// too large, or scan deadline hit). Checking it syncs the whole folder.
+	Truncated bool            `json:"truncated,omitempty"`
+	Children  []*FileTreeNode `json:"children,omitempty"`
 }
 
 // SyncManifest represents the collection of files selected for synchronization
@@ -77,6 +80,12 @@ type SenderInitResult struct {
 	SelectedFiles       int      `json:"selectedFiles"`
 	TotalBytes          int64    `json:"totalBytes"`
 	AbsoluteSyncFolders []string `json:"absoluteSyncFolders,omitempty"`
+	// RelayScope describes who can use this code: "public" (default; public
+	// MQTT rendezvous, works across networks), "lan" (sender's embedded relay,
+	// same network only), "tailscale" (same tailnet), "shared" (WORMHOLE_RELAY
+	// configured), or "none".
+	RelayScope string `json:"relayScope,omitempty"`
+	RelayAddr  string `json:"relayAddr,omitempty"`
 }
 
 // NetworkInfo provides detected local network and Tailscale addresses

@@ -10,7 +10,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
 - **Fast Scanning & Instant Codes**: The directory tree is walked in parallel and the share code is generated the moment you press Start, while hashing continues in the background. A peer can connect while hashing is still running and the manifest is delivered as soon as it is ready.
 - **Atomic Safe Writes**: Every incoming file is streamed into a `.wormhole.tmp` file, hash-verified, and then atomically renamed into place. Connection drops or pauses will never corrupt existing instance files.
 - **Two Network Modes**:
-  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels over STUN. An auto-generated, time-based session code (e.g. `K7X2-M9QF`) is created for you to share with your peer. On a LAN or over Tailscale the code carries the host's own embedded relay address, so it works with zero setup. For true internet NAT-to-NAT punching, run the bundled relay on a public host and point both peers at it with `WORMHOLE_RELAY`.
+  1. **P2P NAT Hole Punch (WebRTC)**: Direct peer-to-peer data channels over STUN. An auto-generated, time-based session code (e.g. `K7X2-M9QF`) is created for you to share with your peer. By default the SDP handshake goes through a public MQTT rendezvous, so plain codes work between different networks with zero setup. On a Tailnet the code instead carries the host's own embedded relay address (`CODE@100.x.y.z:42425`). Self-host the relay and set `WORMHOLE_RELAY` on both peers to avoid third parties entirely.
   2. **Direct Network (Tailscale / LAN)**: Direct high-speed TCP socket transfer over Tailscale (`100.x.y.z`) or local network, automatically detecting host IP addresses with zero third-party dependencies.
 - **Folder Mirroring & Pruning (Absolute Sync)**: Optionally designate specific folders (e.g. `mods/` and `config/`) to strictly mirror 1:1. Any extra or obsolete files on the receiver's side within those specific folders are automatically pruned, while non-mirrored directories and root files (such as individual files like `options.txt`) remain untouched.
 - **Hierarchical Directory Tree & Presets**:
@@ -27,12 +27,13 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
 ## Network Modes
 
 - **Direct / Tailscale (recommended, works out of the box)**: The sender listens on TCP `42424` (falling back to a random port if it is busy) and advertises its Tailscale or LAN address. The receiver connects straight to it. No server required.
-- **WebRTC code (works on LAN/Tailscale by default)**: The sender shares a code of the form `K7X2-M9QF@192.168.1.20:42425`. The address after `@` is the sender's built-in signaling relay. The peers exchange SDP through it and then stream over a peer-to-peer DataChannel.
-- **WebRTC over the internet (optional)**: Two peers behind separate NATs need one shared rendezvous point. Run the relay on any public host:
+- **WebRTC code (works across networks by default)**: The sender shares a short code (`K7X2-M9QF`). Both peers connect outbound to a public MQTT rendezvous (`broker.hivemq.com`, falling back to `test.mosquitto.org`), exchange SDP, then stream over a peer-to-peer DTLS-encrypted DataChannel. Only signalling touches the broker; file bytes never do. Use `WORMHOLE_MQTT=ssl://your-broker:8883` to pick your own broker.
+- **WebRTC code on a LAN/Tailnet only**: If a Tailscale address is detected (or `WORMHOLE_SIGNAL=local` is set), the code becomes `K7X2-M9QF@192.168.1.20:42425` and the sender's built-in relay is used instead, with no third party involved.
+- **Self-hosted relay (optional)**: Run the bundled relay on any public host and set `WORMHOLE_RELAY` on both machines:
   ```
   wormhole-sync -relay -port 42425
   ```
-  Then set `WORMHOLE_RELAY=https://your-relay-host:42425` on both machines before launching the app. The generated code is then just the short code (no `@address`).
+  The generated code is then just the short code (no `@address`).
 - **Strict NATs**: if hole punching fails on both sides, set `WORMHOLE_TURN_URL` (plus `WORMHOLE_TURN_USERNAME` and `WORMHOLE_TURN_CREDENTIAL`) on both machines to relay WebRTC through a TURN server. The app reports an ICE failure with this hint instead of hanging.
 
 ---
