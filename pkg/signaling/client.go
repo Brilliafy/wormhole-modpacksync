@@ -16,6 +16,11 @@ type SignalingClient struct {
 	relayURL string
 }
 
+// DefaultRelayURL is used when no shared relay is configured. The sender hosts
+// this relay itself and advertises its address inside the session code, so it
+// is only reachable from the same LAN or Tailnet.
+const DefaultRelayURL = "http://127.0.0.1:42425"
+
 // normalizeRelayURL ensures the relay endpoint has a scheme and no trailing
 // slash. Bare "host:port" values (such as the address embedded in a session
 // code) are assumed to be plain HTTP.
@@ -23,12 +28,21 @@ func normalizeRelayURL(raw string) string {
 	u := strings.TrimSpace(raw)
 	u = strings.TrimRight(u, "/")
 	if u == "" {
-		return "http://127.0.0.1:42425"
+		return DefaultRelayURL
 	}
 	if !strings.Contains(u, "://") {
 		u = "http://" + u
 	}
 	return u
+}
+
+// ResolveRelayURL returns the effective relay endpoint for an optional
+// override, applying the same fallback rules as the client itself.
+func ResolveRelayURL(override string) string {
+	if strings.TrimSpace(override) != "" {
+		return normalizeRelayURL(override)
+	}
+	return RelayURLFromEnv()
 }
 
 // RelayURLFromEnv resolves the signaling relay endpoint. A relay must be
@@ -44,7 +58,7 @@ func RelayURLFromEnv() string {
 			}
 		}
 	}
-	return "http://127.0.0.1:42425"
+	return DefaultRelayURL
 }
 
 func NewSignalingClient(relayURL string) *SignalingClient {
@@ -55,6 +69,10 @@ func NewSignalingClient(relayURL string) *SignalingClient {
 		relayURL: normalizeRelayURL(relayURL),
 	}
 }
+
+// Close is a no-op for the HTTP relay client; it exists so both rendezvous
+// backends satisfy RoomSignaler.
+func (c *SignalingClient) Close() {}
 
 // PublishOffer posts the offer and direct address to the signaling server
 func (c *SignalingClient) PublishOffer(ctx context.Context, code string, offerSDP string, directAddr string) error {
@@ -136,7 +154,16 @@ func (c *SignalingClient) FetchOffer(ctx context.Context, code string) (string, 
 		}
 
 		resp, err := c.client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err != nil {
+			// Transport-level failure: the relay itself is unreachable (wrong
+			// address, LAN-only relay while the peer is remote, firewall).
+			// Retrying for two minutes only hides the real problem.
+			if ctx.Err() != nil {
+				return "", "", ctx.Err()
+			}
+			return "", "", fmt.Errorf("cannot reach signaling relay %s: %w", c.relayURL, err)
+		}
+		if resp.StatusCode == http.StatusOK {
 			var body struct {
 				Offer      string `json:"offer"`
 				DirectAddr string `json:"directAddr"`
@@ -146,7 +173,7 @@ func (c *SignalingClient) FetchOffer(ctx context.Context, code string) (string, 
 			if decodeErr == nil && (body.Offer != "" || body.DirectAddr != "") {
 				return body.Offer, body.DirectAddr, nil
 			}
-		} else if resp != nil {
+		} else {
 			resp.Body.Close()
 		}
 

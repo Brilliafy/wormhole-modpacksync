@@ -37,10 +37,10 @@
   $effect(() => {
     if (rootNode) {
       initMaps(rootNode);
-      // Auto-expand top level folders
+      // Auto-expand top level folders (skip ones that were not scanned)
       if (rootNode.children) {
         for (const child of rootNode.children) {
-          if (child.isDir) {
+          if (child.isDir && !child.truncated) {
             expandedFolders[child.relPath] = true;
           }
         }
@@ -113,7 +113,13 @@
   function getSelectedFilePaths(): string[] {
     const list: string[] = [];
     function collect(node: models.FileTreeNode) {
-      if (!node.isDir && checkedMap[node.relPath]) {
+      if (node.isDir) {
+        // Folders that were not scanned (too deep/large) are sent as a whole
+        // path so the backend walks them when building the manifest.
+        if (node.truncated && node.relPath !== "" && checkedMap[node.relPath]) {
+          list.push(node.relPath);
+        }
+      } else if (checkedMap[node.relPath]) {
         list.push(node.relPath);
       }
       if (node.children) {
@@ -154,8 +160,13 @@
   let selectionStats = $derived.by(() => {
     let count = 0;
     let bytes = 0;
+    let wholeFolders = 0;
     function countStats(node: models.FileTreeNode) {
-      if (!node.isDir && checkedMap[node.relPath]) {
+      if (node.isDir) {
+        if (node.truncated && node.relPath !== "" && checkedMap[node.relPath]) {
+          wholeFolders++;
+        }
+      } else if (checkedMap[node.relPath]) {
         count++;
         bytes += node.size;
       }
@@ -168,7 +179,7 @@
     if (rootNode) {
       countStats(rootNode);
     }
-    return { count, bytes };
+    return { count, bytes, wholeFolders };
   });
 
   let activeMirroredFolders = $derived.by(() => {
@@ -258,6 +269,9 @@
   <div class="px-3 py-1.5 bg-[#17181f] border-t border-[#262731] flex items-center justify-between text-xs text-neutral-400">
     <div>
       <strong class="text-amber-400 font-medium">{selectionStats.count}</strong> files selected
+      {#if selectionStats.wholeFolders > 0}
+        <span class="text-neutral-500">+ {selectionStats.wholeFolders} whole folder{selectionStats.wholeFolders === 1 ? "" : "s"}</span>
+      {/if}
     </div>
     <div class="font-mono tabular-nums text-neutral-300">
       {formatBytes(selectionStats.bytes)}
@@ -275,11 +289,14 @@
       {#if node.isDir}
         <button
           type="button"
-          onclick={(e) => { e.stopPropagation(); toggleExpand(node.relPath); }}
-          title={expandedFolders[node.relPath] ? "Collapse" : "Expand"}
-          class="w-5 h-5 flex-shrink-0 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#22242d] rounded-[3px] cursor-pointer transition-colors"
+          onclick={(e) => { e.stopPropagation(); if (!node.truncated) toggleExpand(node.relPath); }}
+          title={node.truncated ? "Folder not scanned (too deep or too large) — checking it syncs the whole folder" : (expandedFolders[node.relPath] ? "Collapse" : "Expand")}
+          disabled={node.truncated}
+          class="w-5 h-5 flex-shrink-0 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-[#22242d] rounded-[3px] cursor-pointer transition-colors disabled:cursor-default disabled:opacity-40"
         >
-          {#if expandedFolders[node.relPath]}
+          {#if node.truncated}
+            <span class="text-[10px]">···</span>
+          {:else if expandedFolders[node.relPath]}
             <ChevronDown class="w-3 h-3" />
           {:else}
             <ChevronRight class="w-3 h-3" />
@@ -309,11 +326,14 @@
         type="button"
         class="flex items-center gap-1.5 flex-1 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer"
         title={node.isDir ? "Double-click to expand or collapse" : ""}
-        ondblclick={() => node.isDir && toggleExpand(node.relPath)}
+        ondblclick={() => node.isDir && !node.truncated && toggleExpand(node.relPath)}
       >
         {#if node.isDir}
           <Folder class="w-3.5 h-3.5 text-amber-500/90 flex-shrink-0" />
           <span class="font-medium text-neutral-200 truncate">{node.name}</span>
+          {#if node.truncated}
+            <span class="text-[10px] text-neutral-500 flex-shrink-0" title="Contents not listed (too deep or too large). Checking syncs the entire folder.">whole folder</span>
+          {/if}
         {:else}
           <File class="w-3.5 h-3.5 text-neutral-400 flex-shrink-0" />
           <span class="text-neutral-300 truncate">{node.name}</span>

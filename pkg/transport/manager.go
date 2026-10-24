@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -134,25 +135,45 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	code := signaling.GenerateRoomCode()
 	netInfo := sm.GetNetworkInfo()
 
-	// When no shared relay is configured, use the sender's own embedded relay
-	// as the rendezvous point and advertise its address inside the shared code
-	// (form "<code>@<host:port>"). This lets code-based WebRTC work on a LAN or
-	// over Tailscale with zero extra infrastructure. With WORMHOLE_RELAY set,
-	// the plain code is used and both peers meet on the shared relay instead.
+	// Rendezvous selection. A relay both peers can reach is mandatory for the
+	// WebRTC handshake; there is no peer discovery without one.
+	//   1. WORMHOLE_RELAY set  -> shared self-hosted relay, plain code.
+	//   2. Tailscale present   -> sender's embedded relay on the tailnet.
+	//   3. otherwise           -> public MQTT rendezvous, so plain codes work
+	//                             between different networks with zero setup.
+	// WORMHOLE_SIGNAL=local forces case 2 (LAN/Tailnet only, no third party).
 	advertisedCode := code
-	if signaling.RelayURLFromEnv() == "http://127.0.0.1:42425" {
+	relayScope := "public"
+	relayAddr := ""
+	useEmbeddedRelay := false
+	switch {
+	case signaling.RelayURLFromEnv() != signaling.DefaultRelayURL:
+		relayScope = "shared"
+		relayAddr = signaling.RelayURLFromEnv()
+	case netInfo.TailscaleIP != "" || strings.EqualFold(os.Getenv("WORMHOLE_SIGNAL"), "local"):
+		useEmbeddedRelay = true
 		relayHost := netInfo.TailscaleIP
-		if relayHost == "" && len(netInfo.LocalIPs) > 0 {
+		if relayHost != "" {
+			relayScope = "tailscale"
+		} else if len(netInfo.LocalIPs) > 0 {
+			relayScope = "lan"
 			relayHost = netInfo.LocalIPs[0]
+		} else {
+			relayScope = "none"
 		}
 		if relayHost != "" {
-			advertisedCode = fmt.Sprintf("%s@%s:%d", code, relayHost, sm.relayPort)
+			relayAddr = fmt.Sprintf("%s:%d", relayHost, sm.relayPort)
+			advertisedCode = fmt.Sprintf("%s@%s", code, relayAddr)
 		}
+	default:
+		relayScope = "public"
 	}
 
 	result := &models.SenderInitResult{
 		Code:        advertisedCode,
 		TailscaleIP: netInfo.TailscaleIP,
+		RelayScope:  relayScope,
+		RelayAddr:   relayAddr,
 	}
 
 	// Hash progress is throttled: emitting one Wails event per file floods
@@ -302,9 +323,13 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 				return
 			}
 
-			// Publish to the signaling relay so the receiver can answer as
-			// soon as it wants; hashing does not gate the handshake.
-			sigClient := signaling.NewSignalingClient("")
+			// Publish to the rendezvous so the receiver can answer as soon as
+			// it wants; hashing does not gate the handshake.
+			sigClient := signaling.NewRoomSignaler("", code)
+			if useEmbeddedRelay {
+				sigClient = signaling.NewSignalingClient("")
+			}
+			defer sigClient.Close()
 			directHint := ""
 			if len(directAddrs) > 0 {
 				directHint = directAddrs[0]
@@ -429,25 +454,40 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 		sm.mu.Unlock()
 
 		go func() {
+			effectiveRelay := signaling.RoomSignalerLabel(relayOverride)
 			sm.UpdateStats(models.SyncStats{
 				Status:  "connecting",
 				Role:    "receiver",
 				Mode:    "webrtc",
 				Code:    roomCode,
-				Message: fmt.Sprintf("Connecting using code [%s]...", roomCode),
+				Message: fmt.Sprintf("Contacting rendezvous %s for code [%s]...", effectiveRelay, roomCode),
 			})
 
-			sigClient := signaling.NewSignalingClient(relayOverride)
+			sigClient := signaling.NewRoomSignaler(relayOverride, roomCode)
+			defer sigClient.Close()
 			fetchCtx, cancelFetch := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancelFetch()
 			offerSDP, directAddr, err := sigClient.FetchOffer(fetchCtx, roomCode)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if fetchCtx.Err() != nil {
+					sm.UpdateStats(models.SyncStats{
+						Status:       "error",
+						Role:         "receiver",
+						Mode:         "webrtc",
+						Code:         roomCode,
+						ErrorMessage: fmt.Sprintf("No session found for code [%s] on relay %s. Check the code, or make sure the sender is still running.", roomCode, effectiveRelay),
+					})
+					return
+				}
 				sm.UpdateStats(models.SyncStats{
 					Status:       "error",
 					Role:         "receiver",
 					Mode:         "webrtc",
 					Code:         roomCode,
-					ErrorMessage: fmt.Sprintf("Could not find a session for code [%s]. Double-check the code, or use Direct / Tailscale mode with the host's IP address. (%v)", roomCode, err),
+					ErrorMessage: fmt.Sprintf("Could not reach the signaling relay %s for code [%s]. A code containing a 192.168.x.x / 10.x.x.x address only works on the sender's local network: use Direct / Tailscale mode, enable Tailscale on both PCs, or run a shared relay and set WORMHOLE_RELAY on both sides. (%v)", effectiveRelay, roomCode, err),
 				})
 				return
 			}

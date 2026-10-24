@@ -3,6 +3,7 @@ module wormhole-sync
 go 1.25.0
 
 require (
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/pion/ice/v4 v4.4.7
 	github.com/pion/webrtc/v4 v4.2.23
 	github.com/wailsapp/wails/v2 v2.16.0
@@ -50,6 +51,7 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

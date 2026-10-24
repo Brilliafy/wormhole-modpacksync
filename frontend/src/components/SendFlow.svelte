@@ -38,6 +38,8 @@
 
   let roomCode = $state("");
   let directAddresses = $state<string[]>([]);
+  let relayScope = $state("");
+  let relayAddr = $state("");
   let copied = $state(false);
   let localError = $state("");
   let isSessionStarted = $state(false);
@@ -108,6 +110,8 @@
       if (result) {
         roomCode = result.code;
         directAddresses = result.directAddresses || [];
+        relayScope = result.relayScope || "";
+        relayAddr = result.relayAddr || "";
       }
     } catch (err: unknown) {
       isSessionStarted = false;
@@ -267,6 +271,28 @@
           {#if networkMode === "direct" && directAddresses.length > 0}
             <div class="text-xs text-neutral-400 mt-1">
               Direct IP: <span class="text-neutral-200 select-all font-mono font-medium">{directAddresses[0]}</span>
+            </div>
+          {/if}
+
+          {#if networkMode === "webrtc" && relayScope === "public"}
+            <div class="text-[11px] text-neutral-500 flex items-start gap-1.5 mt-1">
+              <Activity class="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>Handshake via public MQTT rendezvous. File data goes peer-to-peer, encrypted with DTLS.</span>
+            </div>
+          {:else if networkMode === "webrtc" && relayScope === "lan"}
+            <div class="p-2 rounded-[2px] bg-[#211a0c] border border-[#483713] text-amber-300 text-xs flex items-start gap-2">
+              <AlertCircle class="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <span>
+                This code uses <strong class="text-amber-200">{relayAddr}</strong>, your local network address.
+                It only works if your friend is on the same Wi-Fi/router.
+                For a friend elsewhere: enable Tailscale on both PCs (then the code uses your 100.x address),
+                use Direct / Tailscale mode, or run a shared relay and set <code class="font-mono">WORMHOLE_RELAY</code> on both sides.
+              </span>
+            </div>
+          {:else if networkMode === "webrtc" && relayScope === "none"}
+            <div class="p-2 rounded-[2px] bg-[#291314] border border-[#521c1f] text-rose-300 text-xs flex items-start gap-2">
+              <AlertCircle class="w-4 h-4 flex-shrink-0 text-rose-400" />
+              <span>No usable network address found for the built-in relay. Set <code class="font-mono">WORMHOLE_RELAY</code> to a relay both peers can reach.</span>
             </div>
           {/if}
         {/if}

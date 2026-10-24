@@ -8,6 +8,7 @@ export namespace models {
 	    size: number;
 	    checked: boolean;
 	    absoluteSync: boolean;
+	    truncated?: boolean;
 	    children?: FileTreeNode[];
 	
 	    static createFrom(source: any = {}) {
@@ -23,6 +24,7 @@ export namespace models {
 	        this.size = source["size"];
 	        this.checked = source["checked"];
 	        this.absoluteSync = source["absoluteSync"];
+	        this.truncated = source["truncated"];
 	        this.children = this.convertValues(source["children"], FileTreeNode);
 	    }
 	
@@ -67,6 +69,8 @@ export namespace models {
 	    selectedFiles: number;
 	    totalBytes: number;
 	    absoluteSyncFolders?: string[];
+	    relayScope?: string;
+	    relayAddr?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SenderInitResult(source);
@@ -80,6 +84,8 @@ export namespace models {
 	        this.selectedFiles = source["selectedFiles"];
 	        this.totalBytes = source["totalBytes"];
 	        this.absoluteSyncFolders = source["absoluteSyncFolders"];
+	        this.relayScope = source["relayScope"];
+	        this.relayAddr = source["relayAddr"];
 	    }
 	}
 	export class SyncStats {
