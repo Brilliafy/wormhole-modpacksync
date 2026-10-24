@@ -25,6 +25,13 @@ const ChunkSize = 64 * 1024
 // modpack contains 100k+ tiny files.
 const ackBatchSize = 32
 
+// Connection phase deadlines. A peer that connects but never speaks must not
+// wedge the session: the handshake is short, the manifest exchange is generous.
+var (
+	handshakeTimeout = 20 * time.Second
+	exchangeTimeout  = 5 * time.Minute
+)
+
 // DirectSender runs a TCP server waiting for the receiver to connect
 type DirectSender struct {
 	mu               sync.Mutex
@@ -94,32 +101,69 @@ func (s *DirectSender) Start(ctx context.Context) error {
 		Message: fmt.Sprintf("Waiting for friend to connect on port %d...", port),
 	})
 
-	// Wait for receiver connection
-	connChan := make(chan net.Conn, 1)
-	errChan := make(chan error, 1)
+	// Accept connections until one session actually completes. A single stale
+	// or half-open connection (Tailscale reconnect, peer restart, Wi-Fi blip)
+	// used to wedge the sender forever: it accepted exactly one connection,
+	// closed the listener and blocked on reads with no deadline, so every
+	// retry from the peer sat unaccepted in the backlog.
+	for {
+		conn, err := acceptConn(ctx, ln)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
 
+		s.mu.Lock()
+		s.conn = conn
+		s.mu.Unlock()
+
+		err = s.handleSenderSession(ctx, conn)
+		conn.Close()
+		s.mu.Lock()
+		s.conn = nil
+		s.mu.Unlock()
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil {
+			ln.Close()
+			return nil
+		}
+
+		// Stale handshake or aborted peer: drop it and keep listening so the
+		// friend can simply try again without restarting the session.
+		s.updateStatus(models.SyncStats{
+			Status:      "waiting",
+			Role:        "sender",
+			Mode:        "direct",
+			PeerAddress: "",
+			Message:     fmt.Sprintf("Peer connection dropped (%v). Still waiting on port %d...", err, port),
+		})
+	}
+}
+
+// acceptConn waits for one TCP connection while honouring ctx cancellation.
+func acceptConn(ctx context.Context, ln net.Listener) (net.Conn, error) {
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
 	go func() {
 		conn, err := ln.Accept()
-		if err != nil {
-			errChan <- err
-			return
-		}
-		connChan <- conn
+		ch <- result{conn: conn, err: err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		ln.Close()
-		return ctx.Err()
-	case err := <-errChan:
-		return err
-	case conn := <-connChan:
-		s.mu.Lock()
-		s.conn = conn
-		s.mu.Unlock()
-		defer conn.Close()
-		defer ln.Close()
-		return s.handleSenderSession(ctx, conn)
+		<-ch
+		return nil, ctx.Err()
+	case res := <-ch:
+		return res.conn, res.err
 	}
 }
 
@@ -186,6 +230,14 @@ func (s *DirectSender) updateStatus(stats models.SyncStats) {
 
 func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) error {
 	peerAddr := conn.RemoteAddr().String()
+
+	// Phase deadlines: a half-open connection must never wedge the session.
+	// Handshake gets a short deadline, the manifest exchange a generous one,
+	// and the transfer itself runs without one (pause can last indefinitely).
+	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+
 	s.updateStatus(models.SyncStats{
 		Status:      "connecting",
 		Role:        "sender",
@@ -202,6 +254,11 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 	peerMsg, err := ReadFramedJSON(conn)
 	if err != nil || peerMsg.Type != MsgHello {
 		return fmt.Errorf("failed peer hello handshake: %v", err)
+	}
+
+	// Manifest + delta negotiation can move tens of MB on huge instances.
+	if err := conn.SetDeadline(time.Now().Add(exchangeTimeout)); err != nil {
+		return err
 	}
 
 	// Send Manifest. The provider blocks until background hashing finishes,
@@ -281,6 +338,11 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 		Percent:          0,
 		Message:          fmt.Sprintf("Sending %d delta files (%s)...", totalNeededFiles, models.FormatBytes(totalDeltaBytes)),
 	})
+
+	// Transfer phase: no deadline, pauses and slow links are legitimate.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
 
 	var transferredBytes int64 = 0
 	buf := make([]byte, ChunkSize)
@@ -502,6 +564,11 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 
 	peerAddr := conn.RemoteAddr().String()
 
+	// A dead or stalled sender must not block the receiver forever.
+	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+
 	// Handshake
 	peerMsg, err := ReadFramedJSON(conn)
 	if err != nil || peerMsg.Type != MsgHello {
@@ -512,7 +579,10 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Receive Manifest
+	// Receive Manifest (large for big instances, but not infinite).
+	if err := conn.SetDeadline(time.Now().Add(exchangeTimeout)); err != nil {
+		return err
+	}
 	manifestMsg, err := ReadFramedJSON(conn)
 	if err != nil || manifestMsg.Type != MsgManifest || manifestMsg.Manifest == nil {
 		return fmt.Errorf("failed receiving manifest: %v", err)
@@ -528,6 +598,12 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		TotalFiles:  manifest.TotalFiles,
 		TotalBytes:  manifest.TotalBytes,
 	})
+
+	// Verifying local files can legitimately take minutes on slow disks, so the
+	// connection must not time out while it runs.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
 
 	// Plan delta
 	plan, err := delta.PlanDelta(ctx, r.destDir, manifest, func(checked, total int, current string) {

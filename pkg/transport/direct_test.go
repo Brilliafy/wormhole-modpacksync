@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -113,5 +114,64 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 	}
 	if string(personalContent) != "do not delete me" {
 		t.Errorf("friend-personal-options.txt content corrupted")
+	}
+}
+
+// TestDirectSenderSurvivesStaleConnection reproduces the "friend connects and
+// nothing happens" wedge: a peer opens a TCP connection and never speaks (or
+// dies mid-handshake). The sender used to accept exactly one connection, close
+// the listener and block forever, so every retry hung in the backlog.
+func TestDirectSenderSurvivesStaleConnection(t *testing.T) {
+	oldHandshake, oldExchange := handshakeTimeout, exchangeTimeout
+	handshakeTimeout, exchangeTimeout = 1*time.Second, 5*time.Second
+	defer func() { handshakeTimeout, exchangeTimeout = oldHandshake, oldExchange }()
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "mods.jar"), []byte("payload"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := scanner.ScanSelectedFiles(context.Background(), src, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sender := NewDirectSender(src, func() *models.SyncManifest { return manifest }, 0, func(models.SyncStats) {})
+	if err := sender.Listen("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- sender.Start(ctx) }()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", sender.Port())
+
+	// Stale peer: connect, never send HELLO, never read.
+	stale, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("stale dial: %v", err)
+	}
+	defer stale.Close()
+
+	// Give the sender time to accept the stale connection before the real peer.
+	time.Sleep(200 * time.Millisecond)
+
+	dest := t.TempDir()
+	receiver := NewDirectReceiver(dest, addr, func(models.SyncStats) {})
+	if err := receiver.Start(ctx); err != nil {
+		t.Fatalf("receiver failed after a stale connection: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dest, "mods.jar")); err != nil {
+		t.Fatalf("file was not transferred after stale connection: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sender returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("sender never completed the session")
 	}
 }
