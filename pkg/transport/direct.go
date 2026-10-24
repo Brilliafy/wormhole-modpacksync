@@ -20,6 +20,11 @@ import (
 
 const ChunkSize = 64 * 1024
 
+// ackBatchSize is how many files the receiver acknowledges at once. One ACK per
+// file adds a network round trip per file, which dominates transfer time when a
+// modpack contains 100k+ tiny files.
+const ackBatchSize = 32
+
 // DirectSender runs a TCP server waiting for the receiver to connect
 type DirectSender struct {
 	mu               sync.Mutex
@@ -281,8 +286,35 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 	buf := make([]byte, ChunkSize)
 	throttle := newProgressThrottle(100 * time.Millisecond)
 
+	// ACKs arrive in batches now. Waiting for one ACK per file used to cost a
+	// full network round trip per file: on Tailscale (~30ms RTT) a modpack with
+	// 126k files spent an hour doing nothing but ACK round trips. Drain them in
+	// the background and only surface fatal receiver errors.
+	recvErr := make(chan error, 1)
+	go func() {
+		for {
+			msg, err := ReadFramedJSON(conn)
+			if err != nil {
+				return
+			}
+			if msg.Type == MsgError {
+				select {
+				case recvErr <- fmt.Errorf("receiver error: %s", msg.Error):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
 	skippedFiles := 0
 	for fileIdx, file := range filesToSend {
+		select {
+		case err := <-recvErr:
+			return err
+		default:
+		}
+
 		if !s.checkPause() {
 			return fmt.Errorf("transfer stopped by user")
 		}
@@ -384,12 +416,6 @@ func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) e
 		zeroLen := make([]byte, 4)
 		if _, err := conn.Write(zeroLen); err != nil {
 			return err
-		}
-
-		// Wait for ACK from receiver
-		ackMsg, err := ReadFramedJSON(conn)
-		if err != nil || ackMsg.Type != MsgFileAck {
-			return fmt.Errorf("failed waiting for file ack: %v", err)
 		}
 	}
 
@@ -654,11 +680,14 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 			return fmt.Errorf("failed atomic write for %s: %w", curFile.RelPath, err)
 		}
 
-		// Send ACK to sender
-		if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgFileAck}); err != nil {
-			return err
-		}
+		// Batch ACKs: one per file costs a round trip per file, which dominates
+		// transfer time for instances with tens of thousands of small files.
 		receivedFiles++
+		if receivedFiles%ackBatchSize == 0 {
+			if err := WriteFramedJSON(conn, &ControlMessage{Type: MsgFileAck}); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Final complete message

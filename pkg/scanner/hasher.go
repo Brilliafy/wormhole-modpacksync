@@ -40,6 +40,33 @@ func HashFile(filePath string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+// hashOpenedFile stats and hashes a file through a single handle so callers
+// that do not stat beforehand pay one open() instead of open()+stat().
+func hashOpenedFile(filePath string, buf []byte) (size int64, modTime int64, hash string, err error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	defer file.Close()
+
+	fi, err := file.Stat()
+	if err != nil {
+		return 0, 0, "", err
+	}
+	size = fi.Size()
+	modTime = fi.ModTime().Unix()
+
+	if size == 0 {
+		return 0, modTime, emptySHA256, nil
+	}
+
+	hasher := sha256.New()
+	if _, err := io.CopyBuffer(hasher, file, buf); err != nil {
+		return 0, 0, "", err
+	}
+	return size, modTime, hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
 // HashFilesParallel computes hashes for a slice of FileInfo using a worker
 // pool. Files that cannot be read are dropped from the result instead of
 // silently producing an empty hash, which would poison delta planning and
@@ -75,6 +102,7 @@ func HashFilesParallel(ctx context.Context, rootPath string, files []models.File
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			buf := make([]byte, 1024*1024)
 			for j := range jobs {
 				select {
 				case <-ctx.Done():
@@ -86,8 +114,10 @@ func HashFilesParallel(ctx context.Context, rootPath string, files []models.File
 					result[j.index].Hash = emptySHA256
 				} else {
 					fullPath := filepath.Join(rootPath, filepath.FromSlash(result[j.index].RelPath))
-					hash, err := HashFile(fullPath)
+					size, modTime, hash, err := hashOpenedFile(fullPath, buf)
 					if err == nil {
+						result[j.index].Size = size
+						result[j.index].ModTime = modTime
 						result[j.index].Hash = hash
 					} else {
 						// Unreadable: mark for removal so the manifest only

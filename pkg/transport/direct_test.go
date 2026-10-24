@@ -45,6 +45,7 @@ func TestDirectSenderReceiverSync(t *testing.T) {
 		[]string{"mods/jei.jar", "config/jei.json", "zeustemple.schematic"},
 		[]string{"mods"}, // Only mods is marked for absolute sync
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to scan source files: %v", err)

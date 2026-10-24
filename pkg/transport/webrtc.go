@@ -372,6 +372,7 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	buf := make([]byte, WebRTCChunkSize)
 	throttle := newProgressThrottle(100 * time.Millisecond)
 	skippedFiles := 0
+	sentFiles := 0
 
 	for fileIdx, file := range filesToSend {
 		if !s.checkPause() {
@@ -472,15 +473,23 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 			return err
 		}
 
-		// Wait for ACK
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case data := <-s.msgChan:
-			var ack ControlMessage
-			_ = json.Unmarshal(data, &ack)
-			if ack.Type != MsgFileAck {
-				return fmt.Errorf("unexpected ack response: %v", ack.Type)
+		// ACKs are batched by the receiver: waiting for one per file costs a
+		// round trip per file, which dominates the transfer of instances with
+		// 100k+ small files.
+		sentFiles++
+		if sentFiles%ackBatchSize == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case data := <-s.msgChan:
+				var ack ControlMessage
+				_ = json.Unmarshal(data, &ack)
+				if ack.Type == MsgError {
+					return fmt.Errorf("receiver error: %s", ack.Error)
+				}
+				if ack.Type != MsgFileAck {
+					return fmt.Errorf("unexpected ack response: %v", ack.Type)
+				}
 			}
 		}
 	}
@@ -821,12 +830,14 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 			return fmt.Errorf("failed atomic write for %s: %w", curFile.RelPath, err)
 		}
 
-		// Send ACK
-		ackBytes, _ := json.Marshal(&ControlMessage{Type: MsgFileAck})
-		if err := dc.Send(ackBytes); err != nil {
-			return err
-		}
+		// Batch ACKs to avoid one DataChannel round trip per file.
 		receivedFiles++
+		if receivedFiles%ackBatchSize == 0 {
+			ackBytes, _ := json.Marshal(&ControlMessage{Type: MsgFileAck})
+			if err := dc.Send(ackBytes); err != nil {
+				return err
+			}
+		}
 	}
 
 	finishMsg := fmt.Sprintf("P2P Sync completed successfully (%s)! Saved %s.", models.FormatBytes(transferredBytes), models.FormatBytes(plan.SavedBytes))

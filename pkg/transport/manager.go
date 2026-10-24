@@ -194,7 +194,24 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	go func() {
 		defer close(ready)
 
-		m, err := scanner.ScanSelectedFiles(ctx, rootDir, selectedPaths, absoluteSyncFolders, func(done, total int, current string) {
+		onScan := func(found int, current string) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			if ctx.Err() != nil || !progressThrottle.allow() {
+				return
+			}
+			sm.UpdateStats(models.SyncStats{
+				Status:         "scanning",
+				Role:           "sender",
+				Mode:           mode,
+				Code:           advertisedCode,
+				CompletedFiles: found,
+				CurrentFile:    current,
+				Message:        fmt.Sprintf("Scanning selection: %d files found...", found),
+			})
+		}
+
+		m, err := scanner.ScanSelectedFiles(ctx, rootDir, selectedPaths, absoluteSyncFolders, onScan, func(done, total int, current string) {
 			progressMu.Lock()
 			defer progressMu.Unlock()
 			if !progressThrottle.allow() && done != total {
