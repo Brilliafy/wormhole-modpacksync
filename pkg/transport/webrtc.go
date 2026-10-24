@@ -50,6 +50,8 @@ type WebRTCSender struct {
 	openChan         chan struct{}
 	msgChan          chan []byte
 	openOnce         sync.Once
+	symmetricNAT     int32
+	relayCandidate   int32
 }
 
 // iceServers returns the STUN servers plus an optional TURN server taken from
@@ -93,6 +95,60 @@ func newPeerConnection(cfg webrtc.Configuration) (*webrtc.PeerConnection, error)
 	return api.NewPeerConnection(cfg)
 }
 
+// analyzeNAT inspects gathered candidates from a local SDP.
+//
+// A cone NAT reports the same external port to every STUN server; a symmetric
+// (endpoint-dependent) NAT reports a different port per destination. When that
+// happens no amount of STUN hole punching lets a peer reach us, so the only
+// options are a TURN relay or a different path (Tailscale).
+func analyzeNAT(sdp *webrtc.SessionDescription) (symmetric bool, relay bool) {
+	if sdp == nil {
+		return false, false
+	}
+	srflxPorts := map[string]struct{}{}
+	for _, line := range strings.Split(sdp.SDP, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "a=candidate:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		switch fields[7] {
+		case "relay":
+			relay = true
+		case "srflx":
+			srflxPorts[fields[5]] = struct{}{}
+		}
+	}
+	return len(srflxPorts) > 1, relay
+}
+
+func boolToInt32(b bool) int32 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// NATDiagnosis reports what the last gathered SDP revealed about this network.
+func (s *WebRTCSender) NATDiagnosis() (symmetric bool, relay bool) {
+	return atomic.LoadInt32(&s.symmetricNAT) == 1, atomic.LoadInt32(&s.relayCandidate) == 1
+}
+
+// natHint returns the actionable sentence appended to ICE failure errors.
+func natHint(symmetric, relay bool) string {
+	switch {
+	case relay:
+		return "TURN relay candidates were gathered but the connection still failed; check that the TURN server allows relaying and that both peers share the same code."
+	case symmetric:
+		return "Your network uses symmetric NAT (every destination gets a different external port), so STUN hole punching cannot work. Use Direct / Tailscale mode with Tailscale enabled on both PCs, or set WORMHOLE_TURN_URL to a TURN server (a free Cloudflare Calls TURN app works well)."
+	default:
+		return "Hole punching failed (one peer is behind a strict or symmetric NAT). Use Direct / Tailscale mode with Tailscale enabled on both PCs, or set WORMHOLE_TURN_URL to a TURN server."
+	}
+}
+
 // CreateOffer initializes the WebRTC connection and returns base64-encoded offer with ICE candidates gathered
 func (s *WebRTCSender) CreateOffer() (string, error) {
 	pc, err := newPeerConnection(webrtc.Configuration{ICEServers: iceServers()})
@@ -104,11 +160,13 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 	// Surface NAT traversal failures instead of hanging forever.
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		if state == webrtc.ICEConnectionStateFailed {
+			symmetric := atomic.LoadInt32(&s.symmetricNAT) == 1
+			relay := atomic.LoadInt32(&s.relayCandidate) == 1
 			s.updateStatus(models.SyncStats{
 				Status:       "error",
 				Role:         "sender",
 				Mode:         "webrtc",
-				ErrorMessage: "NAT traversal failed (ICE). Try Direct / Tailscale mode, or configure a TURN server via WORMHOLE_TURN_URL.",
+				ErrorMessage: "NAT traversal failed (ICE). " + natHint(symmetric, relay),
 			})
 		}
 	})
@@ -150,6 +208,10 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	symmetric, relay := analyzeNAT(pc.LocalDescription())
+	atomic.StoreInt32(&s.symmetricNAT, boolToInt32(symmetric))
+	atomic.StoreInt32(&s.relayCandidate, boolToInt32(relay))
 
 	return base64.StdEncoding.EncodeToString(offerJSON), nil
 }
@@ -447,15 +509,17 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 
 // WebRTCReceiver connects to a peer via WebRTC and downloads delta files
 type WebRTCReceiver struct {
-	destDir      string
-	peerConn     *webrtc.PeerConnection
-	speedTracker *SpeedTracker
-	onProgress   func(models.SyncStats)
-	stopped      int32
-	dcChan       chan *webrtc.DataChannel
-	openChan     chan struct{}
-	msgChan      chan []byte
-	openOnce     sync.Once
+	destDir        string
+	peerConn       *webrtc.PeerConnection
+	speedTracker   *SpeedTracker
+	onProgress     func(models.SyncStats)
+	stopped        int32
+	dcChan         chan *webrtc.DataChannel
+	openChan       chan struct{}
+	msgChan        chan []byte
+	openOnce       sync.Once
+	symmetricNAT   int32
+	relayCandidate int32
 }
 
 func NewWebRTCReceiver(destDir string, onProgress func(models.SyncStats)) *WebRTCReceiver {
@@ -502,11 +566,13 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 	})
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		if state == webrtc.ICEConnectionStateFailed {
+			symmetric := atomic.LoadInt32(&r.symmetricNAT) == 1
+			relay := atomic.LoadInt32(&r.relayCandidate) == 1
 			r.updateStatus(models.SyncStats{
 				Status:       "error",
 				Role:         "receiver",
 				Mode:         "webrtc",
-				ErrorMessage: "NAT traversal failed (ICE). Try Direct / Tailscale mode with the host's IP address, or configure a TURN server via WORMHOLE_TURN_URL.",
+				ErrorMessage: "NAT traversal failed (ICE). " + natHint(symmetric, relay),
 			})
 		}
 	})
@@ -534,6 +600,10 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	symmetric, relay := analyzeNAT(pc.LocalDescription())
+	atomic.StoreInt32(&r.symmetricNAT, boolToInt32(symmetric))
+	atomic.StoreInt32(&r.relayCandidate, boolToInt32(relay))
 
 	return base64.StdEncoding.EncodeToString(answerJSON), nil
 }

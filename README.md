@@ -34,7 +34,7 @@ A high-performance, cross-platform file synchronizer built with **Go**, **Wails*
   wormhole-sync -relay -port 42425
   ```
   The generated code is then just the short code (no `@address`).
-- **Strict NATs**: if hole punching fails on both sides, set `WORMHOLE_TURN_URL` (plus `WORMHOLE_TURN_USERNAME` and `WORMHOLE_TURN_CREDENTIAL`) on both machines to relay WebRTC through a TURN server. The app reports an ICE failure with this hint instead of hanging.
+- **Strict / symmetric NATs**: hole punching cannot work when a router gives every destination a different external port. The app detects this from the gathered candidates and says so explicitly instead of failing silently. Fixes: use **Direct / Tailscale** with Tailscale running on both PCs (works through symmetric NAT), or configure a TURN relay with `WORMHOLE_TURN_URL` (+ `WORMHOLE_TURN_USERNAME` / `WORMHOLE_TURN_CREDENTIAL`). A Cloudflare Calls TURN app has a free tier and speaks the standard TURN URLs, so its credentials drop straight into these variables. The public metered.ca open relay used to be a common default; it is blackholed now and requires an account, so it is not bundled.
 
 ---
 

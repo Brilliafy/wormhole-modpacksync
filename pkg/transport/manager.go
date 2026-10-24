@@ -345,12 +345,16 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 				return
 			}
 
+			waitingMsg := fmt.Sprintf("Ready! Share code [%s] with your friend to connect.", advertisedCode)
+			if symmetric, relay := webrtcSender.NATDiagnosis(); symmetric && !relay {
+				waitingMsg = fmt.Sprintf("Ready! Share code [%s]. WARNING: your network uses symmetric NAT, so direct P2P will not work — use Direct / Tailscale mode with Tailscale on both PCs, or configure WORMHOLE_TURN_URL.", advertisedCode)
+			}
 			sm.UpdateStats(models.SyncStats{
 				Status:  "waiting",
 				Role:    "sender",
 				Mode:    "webrtc",
 				Code:    advertisedCode,
-				Message: fmt.Sprintf("Ready! Share code [%s] with your friend to connect.", advertisedCode),
+				Message: waitingMsg,
 			})
 
 			// Wait for receiver's answer
