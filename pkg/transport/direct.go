@@ -228,6 +228,19 @@ func (s *DirectSender) updateStatus(stats models.SyncStats) {
 	}
 }
 
+func (s *DirectSender) StartWithConn(ctx context.Context, conn net.Conn) error {
+	s.mu.Lock()
+	s.conn = conn
+	s.mu.Unlock()
+	defer func() {
+		_ = conn.Close()
+		s.mu.Lock()
+		s.conn = nil
+		s.mu.Unlock()
+	}()
+	return s.handleSenderSession(ctx, conn)
+}
+
 func (s *DirectSender) handleSenderSession(ctx context.Context, conn net.Conn) error {
 	peerAddr := conn.RemoteAddr().String()
 
@@ -559,6 +572,10 @@ func (r *DirectReceiver) Start(ctx context.Context) error {
 		})
 		return err
 	}
+	return r.StartWithConn(ctx, conn)
+}
+
+func (r *DirectReceiver) StartWithConn(ctx context.Context, conn net.Conn) error {
 	r.conn = conn
 	defer conn.Close()
 

@@ -36,10 +36,6 @@
     GetNetworkInfo()
       .then((info) => {
         networkInfo = info;
-        // If Tailscale is active, direct mode is super convenient
-        if (info && info.tailscaleIP) {
-          networkMode = "direct";
-        }
       })
       .catch((err) => {
         console.warn("Could not retrieve network info:", err);
