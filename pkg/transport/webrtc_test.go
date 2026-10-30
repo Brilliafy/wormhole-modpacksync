@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -96,6 +97,107 @@ func TestWebRTCSignalingAndTransfer(t *testing.T) {
 	}
 
 	received, err := os.ReadFile(filepath.Join(dstDir, "mods", "punch.jar"))
+	if err != nil {
+		t.Fatalf("received file missing: %v", err)
+	}
+	if string(received) != string(content) {
+		t.Errorf("received content mismatch: got %q want %q", received, content)
+	}
+}
+
+// TestWebRTCLargeManifest verifies that manifests exceeding Pion's SCTP buffer limit
+// (which previously dropped packets and caused permanent session hangs) are properly
+// chunked, compressed, and transferred successfully.
+func TestWebRTCLargeManifest(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(srcDir, "mods"), 0755)
+	content := []byte("large manifest transfer test")
+	_ = os.WriteFile(filepath.Join(srcDir, "mods", "realfile.jar"), content, 0644)
+
+	// Create 50,000 synthetic files in manifest (>5MB JSON)
+	files := make([]models.FileInfo, 0, 50001)
+	files = append(files, models.FileInfo{
+		RelPath: "mods/realfile.jar",
+		Size:    int64(len(content)),
+		Hash:    "a25dbdcb37cab4f1f7f4f9915228d380c106f4573ca6c7248371f80e04be59b6",
+	})
+	for i := 0; i < 50000; i++ {
+		files = append(files, models.FileInfo{
+			RelPath: fmt.Sprintf("mods/synthetic_%d.jar", i),
+			Size:    1024,
+			Hash:    fmt.Sprintf("hash_%d", i),
+		})
+	}
+
+	manifest := &models.SyncManifest{
+		TotalFiles: len(files),
+		TotalBytes: int64(len(files) * 1024),
+		Files:      files,
+	}
+
+	relay := signaling.NewEmbeddedRelayServer()
+	server := httptest.NewServer(relay.Handler())
+	defer server.Close()
+
+	sender := NewWebRTCSender(srcDir, func() *models.SyncManifest { return manifest }, nil)
+	offer, err := sender.CreateOffer()
+	if err != nil {
+		t.Fatalf("create offer failed: %v", err)
+	}
+
+	senderClient := signaling.NewSignalingClient(server.URL)
+	code := signaling.GenerateRoomCode()
+	ctx := context.Background()
+	if err := senderClient.PublishOffer(ctx, code, offer, ""); err != nil {
+		t.Fatalf("publish offer failed: %v", err)
+	}
+
+	receiver := NewWebRTCReceiver(dstDir, nil)
+	receiverClient := signaling.NewSignalingClient(server.URL)
+	gotOffer, _, err := receiverClient.FetchOffer(ctx, code)
+	if err != nil {
+		t.Fatalf("fetch offer failed: %v", err)
+	}
+	answer, err := receiver.CreateAnswer(gotOffer)
+	if err != nil {
+		t.Fatalf("create answer failed: %v", err)
+	}
+	if err := receiverClient.PublishAnswer(ctx, code, answer); err != nil {
+		t.Fatalf("publish answer failed: %v", err)
+	}
+
+	sessionCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var senderErr, receiverErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		gotAnswer, err := senderClient.WaitForAnswer(sessionCtx, code)
+		if err != nil {
+			senderErr = err
+			return
+		}
+		if err := sender.SetAnswer(gotAnswer); err != nil {
+			senderErr = err
+			return
+		}
+		senderErr = sender.StartSession(sessionCtx)
+	}()
+	receiverErr = receiver.StartSession(sessionCtx)
+	wg.Wait()
+
+	if senderErr != nil {
+		t.Errorf("sender error: %v", senderErr)
+	}
+	if receiverErr != nil {
+		t.Errorf("receiver error: %v", receiverErr)
+	}
+
+	received, err := os.ReadFile(filepath.Join(dstDir, "mods", "realfile.jar"))
 	if err != nil {
 		t.Fatalf("received file missing: %v", err)
 	}

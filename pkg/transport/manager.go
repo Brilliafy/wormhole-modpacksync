@@ -290,6 +290,10 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			directAddrs = append(directAddrs, fmt.Sprintf("%s:%d", ip, actualPort))
 		}
 		result.DirectAddresses = directAddrs
+		if len(directAddrs) > 0 {
+			advertisedCode = directAddrs[0]
+			result.Code = directAddrs[0]
+		}
 
 		go func() {
 			// Local capture: Reset() may nil out sm.directSender while this
@@ -344,7 +348,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			// it wants; hashing does not gate the handshake.
 			sigClient := signaling.NewRoomSignaler("", code)
 			if useEmbeddedRelay {
-				sigClient = signaling.NewSignalingClient("")
+				sigClient = signaling.NewSignalingClient(fmt.Sprintf("http://127.0.0.1:%d", sm.relayPort))
 			}
 			defer sigClient.Close()
 			directHint := ""
@@ -436,7 +440,7 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 
 	roomCode, relayOverride, isDirectAddr := parseReceiverInput(codeOrAddr)
 
-	if isDirectAddr {
+	if mode == "direct" || mode == "tailscale" || isDirectAddr {
 		// Target address
 		addr := roomCode
 		if !strings.Contains(addr, ":") {
