@@ -70,6 +70,7 @@ type SyncStats struct {
 	Code             string   `json:"code"`
 	PeerAddress      string   `json:"peerAddress"`
 	MirroredFolders  []string `json:"mirroredFolders,omitempty"`
+	SavedBytes       int64    `json:"savedBytes,omitempty"`
 }
 
 // SenderInitResult returns the code and detected network addresses for sender

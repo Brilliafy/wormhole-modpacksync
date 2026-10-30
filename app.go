@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	goRuntime "runtime"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"wormhole-sync/pkg/models"
@@ -39,6 +41,21 @@ func (a *App) SelectFolder() (string, error) {
 		return "", err
 	}
 	return selected, nil
+}
+
+// OpenFolder opens the specified directory in the system file manager
+func (a *App) OpenFolder(folderPath string) error {
+	if folderPath == "" {
+		return fmt.Errorf("folder path cannot be empty")
+	}
+	switch goRuntime.GOOS {
+	case "windows":
+		return exec.Command("explorer", folderPath).Start()
+	case "darwin":
+		return exec.Command("open", folderPath).Start()
+	default:
+		return exec.Command("xdg-open", folderPath).Start()
+	}
 }
 
 // ScanFolder produces a hierarchical FileTreeNode for the sender UI
