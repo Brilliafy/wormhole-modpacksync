@@ -13,28 +13,34 @@ import (
 
 // Message types
 const (
-	MsgHello        = "HELLO"
-	MsgManifest     = "MANIFEST"
-	MsgRequestDelta = "REQUEST_DELTA"
-	MsgStartFile    = "START_FILE"
-	MsgFileChunk    = "FILE_CHUNK"
-	MsgEndFile      = "END_FILE"
-	MsgFileAck      = "FILE_ACK"
-	MsgPause        = "PAUSE"
-	MsgResume       = "RESUME"
-	MsgStop         = "STOP"
-	MsgComplete     = "COMPLETE"
-	MsgError        = "ERROR"
+	MsgHello             = "HELLO"
+	MsgManifest          = "MANIFEST"
+	MsgManifestStart     = "MANIFEST_START"
+	MsgManifestEnd       = "MANIFEST_END"
+	MsgRequestDelta      = "REQUEST_DELTA"
+	MsgRequestDeltaStart = "REQUEST_DELTA_START"
+	MsgRequestDeltaEnd   = "REQUEST_DELTA_END"
+	MsgStartFile         = "START_FILE"
+	MsgFileChunk         = "FILE_CHUNK"
+	MsgEndFile           = "END_FILE"
+	MsgFileAck           = "FILE_ACK"
+	MsgPause             = "PAUSE"
+	MsgResume            = "RESUME"
+	MsgStop              = "STOP"
+	MsgComplete          = "COMPLETE"
+	MsgError             = "ERROR"
 )
 
 // ControlMessage is the JSON payload for coordination
 type ControlMessage struct {
-	Type     string               `json:"type"`
-	Role     string               `json:"role,omitempty"`
-	Manifest *models.SyncManifest `json:"manifest,omitempty"`
-	DeltaReq []string             `json:"deltaReq,omitempty"`
-	File     *models.FileInfo     `json:"file,omitempty"`
-	Error    string               `json:"error,omitempty"`
+	Type       string               `json:"type"`
+	Role       string               `json:"role,omitempty"`
+	Manifest   *models.SyncManifest `json:"manifest,omitempty"`
+	DeltaReq   []string             `json:"deltaReq,omitempty"`
+	File       *models.FileInfo     `json:"file,omitempty"`
+	Error      string               `json:"error,omitempty"`
+	TotalSize  int64                `json:"totalSize,omitempty"`
+	Compressed bool                 `json:"compressed,omitempty"`
 }
 
 // WriteFramedJSON encodes a JSON message with 4-byte length prefix

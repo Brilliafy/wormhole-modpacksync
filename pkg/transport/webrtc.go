@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -181,7 +183,7 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 	// Register channel callbacks BEFORE negotiation so a fast connection can
 	// never be missed by a late StartSession call.
 	s.openChan = make(chan struct{})
-	s.msgChan = make(chan []byte, 256)
+	s.msgChan = make(chan []byte, 1024)
 	dc.OnOpen(func() {
 		s.openOnce.Do(func() { close(s.openChan) })
 	})
@@ -279,6 +281,92 @@ func (s *WebRTCSender) updateStatus(stats models.SyncStats) {
 	}
 }
 
+// sendChunkedPayload compresses and transmits a large payload in WebRTCChunkSize chunks
+// over a DataChannel with backpressure checks to prevent SCTP buffer overflow.
+func sendChunkedPayload(dc *webrtc.DataChannel, startType, endType string, data []byte, stopped *int32) error {
+	var compBuf bytes.Buffer
+	gz, err := gzip.NewWriterLevel(&compBuf, gzip.BestSpeed)
+	if err != nil {
+		return err
+	}
+	if _, err := gz.Write(data); err != nil {
+		_ = gz.Close()
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+	compressed := compBuf.Bytes()
+
+	startMsg, err := json.Marshal(&ControlMessage{
+		Type:       startType,
+		TotalSize:  int64(len(compressed)),
+		Compressed: true,
+	})
+	if err != nil {
+		return err
+	}
+	if err := dc.Send(startMsg); err != nil {
+		return err
+	}
+
+	for offset := 0; offset < len(compressed); {
+		if stopped != nil && atomic.LoadInt32(stopped) == 1 {
+			return fmt.Errorf("transfer stopped by user")
+		}
+		for dc.BufferedAmount() > 512*1024 {
+			if stopped != nil && atomic.LoadInt32(stopped) == 1 {
+				return fmt.Errorf("transfer stopped by user")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		end := offset + WebRTCChunkSize
+		if end > len(compressed) {
+			end = len(compressed)
+		}
+		if err := dc.Send(compressed[offset:end]); err != nil {
+			return err
+		}
+		offset = end
+	}
+
+	endMsg, _ := json.Marshal(&ControlMessage{Type: endType})
+	return dc.Send(endMsg)
+}
+
+// receiveChunkedPayload reassembles chunks from msgChan until an endType control message arrives,
+// optionally decompressing the result.
+func receiveChunkedPayload(ctx context.Context, msgChan <-chan []byte, endType string, compressed bool) ([]byte, error) {
+	var payload bytes.Buffer
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case chunk, ok := <-msgChan:
+			if !ok {
+				return nil, io.EOF
+			}
+			var check ControlMessage
+			if len(chunk) < 256 && json.Unmarshal(chunk, &check) == nil && check.Type == endType {
+				if compressed {
+					gz, err := gzip.NewReader(&payload)
+					if err != nil {
+						return nil, fmt.Errorf("failed opening gzip stream: %w", err)
+					}
+					decompressed, err := io.ReadAll(gz)
+					_ = gz.Close()
+					if err != nil {
+						return nil, fmt.Errorf("failed decompressing payload: %w", err)
+					}
+					return decompressed, nil
+				}
+				return payload.Bytes(), nil
+			}
+			payload.Write(chunk)
+		}
+	}
+}
+
 // StartSession waits for DataChannel open and coordinates file sync
 func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	if s.dataChan == nil || s.openChan == nil || s.msgChan == nil {
@@ -319,25 +407,50 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	}
 
 	// Send manifest
-	manifestMsg := &ControlMessage{Type: MsgManifest, Manifest: manifest}
-	manifestBytes, _ := json.Marshal(manifestMsg)
-	if err := s.dataChan.Send(manifestBytes); err != nil {
-		return err
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+
+	if len(manifestJSON) < 16*1024 {
+		manifestMsg := &ControlMessage{Type: MsgManifest, Manifest: manifest}
+		manifestBytes, _ := json.Marshal(manifestMsg)
+		if err := s.dataChan.Send(manifestBytes); err != nil {
+			return err
+		}
+	} else {
+		if err := sendChunkedPayload(s.dataChan, MsgManifestStart, MsgManifestEnd, manifestJSON, &s.stopped); err != nil {
+			return fmt.Errorf("failed to send chunked manifest: %w", err)
+		}
 	}
 
 	// Wait for REQUEST_DELTA
-	var deltaMsg ControlMessage
+	var neededPathsList []string
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case data := <-s.msgChan:
-		if err := json.Unmarshal(data, &deltaMsg); err != nil || deltaMsg.Type != MsgRequestDelta {
-			return fmt.Errorf("unexpected message waiting for delta request: %v", err)
+		var ctrlMsg ControlMessage
+		if err := json.Unmarshal(data, &ctrlMsg); err != nil {
+			return fmt.Errorf("unexpected message waiting for delta request: %w", err)
+		}
+		if ctrlMsg.Type == MsgRequestDelta {
+			neededPathsList = ctrlMsg.DeltaReq
+		} else if ctrlMsg.Type == MsgRequestDeltaStart {
+			rawJSON, err := receiveChunkedPayload(ctx, s.msgChan, MsgRequestDeltaEnd, ctrlMsg.Compressed)
+			if err != nil {
+				return fmt.Errorf("failed to receive chunked delta request: %w", err)
+			}
+			if err := json.Unmarshal(rawJSON, &neededPathsList); err != nil {
+				return fmt.Errorf("failed to unmarshal chunked delta request: %w", err)
+			}
+		} else {
+			return fmt.Errorf("unexpected message waiting for delta request: %s", ctrlMsg.Type)
 		}
 	}
 
 	neededPaths := make(map[string]bool)
-	for _, p := range deltaMsg.DeltaReq {
+	for _, p := range neededPathsList {
 		neededPaths[p] = true
 	}
 
@@ -560,7 +673,7 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 	// Register handlers BEFORE negotiation so no event is ever missed.
 	r.dcChan = make(chan *webrtc.DataChannel, 1)
 	r.openChan = make(chan struct{})
-	r.msgChan = make(chan []byte, 256)
+	r.msgChan = make(chan []byte, 1024)
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		dc.OnOpen(func() {
 			r.openOnce.Do(func() { close(r.openChan) })
@@ -663,16 +776,31 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	})
 
 	// Receive manifest
-	var manifestMsg ControlMessage
+	var manifest *models.SyncManifest
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case data := <-r.msgChan:
-		if err := json.Unmarshal(data, &manifestMsg); err != nil || manifestMsg.Type != MsgManifest {
-			return fmt.Errorf("expected manifest message, got: %v", err)
+		var ctrlMsg ControlMessage
+		if err := json.Unmarshal(data, &ctrlMsg); err != nil {
+			return fmt.Errorf("failed to parse manifest control message: %w", err)
+		}
+		if ctrlMsg.Type == MsgManifest && ctrlMsg.Manifest != nil {
+			manifest = ctrlMsg.Manifest
+		} else if ctrlMsg.Type == MsgManifestStart {
+			rawJSON, err := receiveChunkedPayload(ctx, r.msgChan, MsgManifestEnd, ctrlMsg.Compressed)
+			if err != nil {
+				return fmt.Errorf("failed to receive chunked manifest: %w", err)
+			}
+			var m models.SyncManifest
+			if err := json.Unmarshal(rawJSON, &m); err != nil {
+				return fmt.Errorf("failed to unmarshal chunked manifest: %w", err)
+			}
+			manifest = &m
+		} else {
+			return fmt.Errorf("expected manifest message, got: %s", ctrlMsg.Type)
 		}
 	}
-	manifest := manifestMsg.Manifest
 
 	// Plan delta
 	plan, err := delta.PlanDelta(ctx, r.destDir, manifest, func(checked, total int, current string) {
@@ -718,9 +846,20 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	}
 
 	// Send delta request
-	reqBytes, _ := json.Marshal(&ControlMessage{Type: MsgRequestDelta, DeltaReq: neededPaths})
-	if err := dc.Send(reqBytes); err != nil {
-		return err
+	pathsJSON, err := json.Marshal(neededPaths)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delta request paths: %w", err)
+	}
+
+	if len(pathsJSON) < 16*1024 {
+		reqBytes, _ := json.Marshal(&ControlMessage{Type: MsgRequestDelta, DeltaReq: neededPaths})
+		if err := dc.Send(reqBytes); err != nil {
+			return err
+		}
+	} else {
+		if err := sendChunkedPayload(dc, MsgRequestDeltaStart, MsgRequestDeltaEnd, pathsJSON, &r.stopped); err != nil {
+			return fmt.Errorf("failed to send chunked delta request: %w", err)
+		}
 	}
 
 	if len(plan.FilesToSync) == 0 {
