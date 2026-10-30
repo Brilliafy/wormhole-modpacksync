@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,22 @@ import (
 
 const WebRTCChunkSize = 32 * 1024
 
+func filterOutPrivateCandidates(sdp string) string {
+	lines := strings.Split(sdp, "\n")
+	var filtered []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "a=candidate:") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 8 && fields[7] == "host" {
+				continue
+			}
+		}
+		filtered = append(filtered, l)
+	}
+	return strings.Join(filtered, "\n")
+}
+
 // DefaultICEServers provides standard STUN servers for NAT hole-punching
 var DefaultICEServers = []webrtc.ICEServer{
 	{
@@ -35,6 +53,9 @@ var DefaultICEServers = []webrtc.ICEServer{
 		},
 	},
 }
+
+// ErrNATTraversalFailed indicates direct ICE hole-punching could not establish a connection.
+var ErrNATTraversalFailed = errors.New("NAT traversal failed: hole punching could not establish direct connection")
 
 // WebRTCSender handles P2P file sync over WebRTC DataChannels
 type WebRTCSender struct {
@@ -52,6 +73,8 @@ type WebRTCSender struct {
 	openChan         chan struct{}
 	msgChan          chan []byte
 	openOnce         sync.Once
+	failedChan       chan struct{}
+	failedOnce       sync.Once
 	symmetricNAT     int32
 	relayCandidate   int32
 }
@@ -82,6 +105,7 @@ func NewWebRTCSender(rootDir string, manifestProvider func() *models.SyncManifes
 		manifestProvider: manifestProvider,
 		speedTracker:     NewSpeedTracker(),
 		onProgress:       onProgress,
+		failedChan:       make(chan struct{}),
 	}
 	s.pauseCond = sync.NewCond(&s.pauseMu)
 	return s
@@ -161,6 +185,18 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 
 	// Surface NAT traversal failures instead of hanging forever.
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("[ICE sender] state changed: %s", state)
+		if state == webrtc.ICEConnectionStateConnected || state == webrtc.ICEConnectionStateCompleted {
+			if sctp := pc.SCTP(); sctp != nil && sctp.Transport() != nil && sctp.Transport().ICETransport() != nil {
+				if pair, err := sctp.Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
+					log.Printf("[ICE sender] selected pair: local=%s (%s) <-> remote=%s (%s)",
+						pair.Local.Address, pair.Local.Typ, pair.Remote.Address, pair.Remote.Typ)
+				}
+			}
+		}
+		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected {
+			s.failedOnce.Do(func() { close(s.failedChan) })
+		}
 		if state == webrtc.ICEConnectionStateFailed {
 			symmetric := atomic.LoadInt32(&s.symmetricNAT) == 1
 			relay := atomic.LoadInt32(&s.relayCandidate) == 1
@@ -206,7 +242,12 @@ func (s *WebRTCSender) CreateOffer() (string, error) {
 	// Wait for ICE candidates gathering to finish so the SDP is completely self-contained
 	<-gatherComplete
 
-	offerJSON, err := json.Marshal(pc.LocalDescription())
+	offerDesc := pc.LocalDescription()
+	if os.Getenv("WORMHOLE_TEST_WAN_ONLY") == "1" {
+		offerDesc.SDP = filterOutPrivateCandidates(offerDesc.SDP)
+	}
+
+	offerJSON, err := json.Marshal(offerDesc)
 	if err != nil {
 		return "", err
 	}
@@ -383,6 +424,10 @@ func (s *WebRTCSender) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.failedChan:
+		return ErrNATTraversalFailed
+	case <-time.After(6 * time.Second):
+		return ErrNATTraversalFailed
 	case <-s.openChan:
 	}
 
@@ -640,6 +685,8 @@ type WebRTCReceiver struct {
 	openChan       chan struct{}
 	msgChan        chan []byte
 	openOnce       sync.Once
+	failedChan     chan struct{}
+	failedOnce     sync.Once
 	symmetricNAT   int32
 	relayCandidate int32
 }
@@ -649,6 +696,7 @@ func NewWebRTCReceiver(destDir string, onProgress func(models.SyncStats)) *WebRT
 		destDir:      destDir,
 		speedTracker: NewSpeedTracker(),
 		onProgress:   onProgress,
+		failedChan:   make(chan struct{}),
 	}
 }
 
@@ -687,6 +735,18 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 		}
 	})
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("[ICE receiver] state changed: %s", state)
+		if state == webrtc.ICEConnectionStateConnected || state == webrtc.ICEConnectionStateCompleted {
+			if sctp := pc.SCTP(); sctp != nil && sctp.Transport() != nil && sctp.Transport().ICETransport() != nil {
+				if pair, err := sctp.Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
+					log.Printf("[ICE receiver] selected pair: local=%s (%s) <-> remote=%s (%s)",
+						pair.Local.Address, pair.Local.Typ, pair.Remote.Address, pair.Remote.Typ)
+				}
+			}
+		}
+		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected {
+			r.failedOnce.Do(func() { close(r.failedChan) })
+		}
 		if state == webrtc.ICEConnectionStateFailed {
 			symmetric := atomic.LoadInt32(&r.symmetricNAT) == 1
 			relay := atomic.LoadInt32(&r.relayCandidate) == 1
@@ -718,7 +778,12 @@ func (r *WebRTCReceiver) CreateAnswer(offerBase64 string) (string, error) {
 
 	<-gatherComplete
 
-	answerJSON, err := json.Marshal(pc.LocalDescription())
+	ansDesc := pc.LocalDescription()
+	if os.Getenv("WORMHOLE_TEST_WAN_ONLY") == "1" {
+		ansDesc.SDP = filterOutPrivateCandidates(ansDesc.SDP)
+	}
+
+	answerJSON, err := json.Marshal(ansDesc)
 	if err != nil {
 		return "", err
 	}
@@ -759,12 +824,20 @@ func (r *WebRTCReceiver) StartSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-r.failedChan:
+		return ErrNATTraversalFailed
+	case <-time.After(6 * time.Second):
+		return ErrNATTraversalFailed
 	case dc = <-r.dcChan:
 	}
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-r.failedChan:
+		return ErrNATTraversalFailed
+	case <-time.After(6 * time.Second):
+		return ErrNATTraversalFailed
 	case <-r.openChan:
 	}
 

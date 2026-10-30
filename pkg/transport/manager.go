@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -150,7 +152,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 	case signaling.RelayURLFromEnv() != signaling.DefaultRelayURL:
 		relayScope = "shared"
 		relayAddr = signaling.RelayURLFromEnv()
-	case netInfo.TailscaleIP != "" || strings.EqualFold(os.Getenv("WORMHOLE_SIGNAL"), "local"):
+	case strings.EqualFold(os.Getenv("WORMHOLE_SIGNAL"), "local") || mode == "tailscale":
 		useEmbeddedRelay = true
 		relayHost := netInfo.TailscaleIP
 		if relayHost != "" {
@@ -368,7 +370,7 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 
 			waitingMsg := fmt.Sprintf("Ready! Share code [%s] with your friend to connect.", advertisedCode)
 			if symmetric, relay := webrtcSender.NATDiagnosis(); symmetric && !relay {
-				waitingMsg = fmt.Sprintf("Ready! Share code [%s]. WARNING: your network uses symmetric NAT, so direct P2P will not work — use Direct / Tailscale mode with Tailscale on both PCs, or configure WORMHOLE_TURN_URL.", advertisedCode)
+				waitingMsg = fmt.Sprintf("Ready! Share code [%s] with your friend. (Symmetric NAT detected: direct P2P or encrypted transit bridge will connect automatically)", advertisedCode)
 			}
 			sm.UpdateStats(models.SyncStats{
 				Status:  "waiting",
@@ -403,12 +405,53 @@ func (sm *SessionManager) StartSenderSession(rootDir string, selectedPaths []str
 			}
 
 			if err := webrtcSender.StartSession(ctx); err != nil && ctx.Err() == nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				log.Printf("[SENDER] Direct WebRTC hole-punch could not establish (%v). Falling back to secure Transit Relay...", err)
 				sm.UpdateStats(models.SyncStats{
-					Status:       "error",
-					Role:         "sender",
-					Mode:         "webrtc",
-					ErrorMessage: err.Error(),
+					Status:          "connecting",
+					Role:            "sender",
+					Mode:            "webrtc",
+					Code:            advertisedCode,
+					Message:         "Direct P2P punch blocked by symmetric NAT. Falling back to Encrypted Transit Bridge...",
+					MirroredFolders: absoluteSyncFolders,
 				})
+
+				transitConn, tErr := DialTransitRelay(ctx, code, true)
+				if tErr != nil {
+					sm.UpdateStats(models.SyncStats{
+						Status:          "error",
+						Role:            "sender",
+						Mode:            "webrtc",
+						Code:            advertisedCode,
+						ErrorMessage:    fmt.Sprintf("NAT traversal and relay fallback failed: %v", tErr),
+						MirroredFolders: absoluteSyncFolders,
+					})
+					return
+				}
+
+				directSender := NewDirectSender(rootDir, provider, 0, func(stats models.SyncStats) {
+					stats.Code = advertisedCode
+					stats.Mode = "webrtc"
+					stats.MirroredFolders = absoluteSyncFolders
+					sm.UpdateStats(stats)
+				})
+				sm.mu.Lock()
+				sm.directSender = directSender
+				sm.mu.Unlock()
+
+				if err := directSender.StartWithConn(ctx, transitConn); err != nil && ctx.Err() == nil {
+					sm.UpdateStats(models.SyncStats{
+						Status:          "error",
+						Role:            "sender",
+						Mode:            "webrtc",
+						Code:            advertisedCode,
+						ErrorMessage:    err.Error(),
+						MirroredFolders: absoluteSyncFolders,
+					})
+				}
+				return
 			}
 		}()
 	}
@@ -541,12 +584,49 @@ func (sm *SessionManager) StartReceiverSession(destDir string, mode string, code
 				}
 
 				if err := webrtcReceiver.StartSession(ctx); err != nil && ctx.Err() == nil {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					log.Printf("[RECEIVER] Direct WebRTC hole-punch could not establish (%v). Falling back to secure Transit Relay...", err)
 					sm.UpdateStats(models.SyncStats{
-						Status:       "error",
-						Role:         "receiver",
-						Mode:         "webrtc",
-						ErrorMessage: err.Error(),
+						Status:  "connecting",
+						Role:    "receiver",
+						Mode:    "webrtc",
+						Code:    roomCode,
+						Message: "Direct P2P punch blocked by symmetric NAT. Falling back to Encrypted Transit Bridge...",
 					})
+
+					transitConn, tErr := DialTransitRelay(ctx, roomCode, false)
+					if tErr != nil {
+						sm.UpdateStats(models.SyncStats{
+							Status:       "error",
+							Role:         "receiver",
+							Mode:         "webrtc",
+							Code:         roomCode,
+							ErrorMessage: fmt.Sprintf("NAT traversal and relay fallback failed: %v", tErr),
+						})
+						return
+					}
+
+					directReceiver := NewDirectReceiver(destDir, "", func(stats models.SyncStats) {
+						stats.Code = roomCode
+						stats.Mode = "webrtc"
+						sm.UpdateStats(stats)
+					})
+					sm.mu.Lock()
+					sm.directReceiver = directReceiver
+					sm.mu.Unlock()
+
+					if err := directReceiver.StartWithConn(ctx, transitConn); err != nil && ctx.Err() == nil {
+						sm.UpdateStats(models.SyncStats{
+							Status:       "error",
+							Role:         "receiver",
+							Mode:         "webrtc",
+							Code:         roomCode,
+							ErrorMessage: err.Error(),
+						})
+					}
+					return
 				}
 			} else if directAddr != "" {
 				// Fallback to direct address discovered via signaling

@@ -3,9 +3,12 @@ package signaling
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -25,7 +28,8 @@ import (
 // (for example "ssl://mqtt.example.com:8883").
 var DefaultMQTTBrokers = []string{
 	"ssl://broker.hivemq.com:8883",
-	"ssl://test.mosquitto.org:8883",
+	"ssl://broker.emqx.io:8883",
+	"tcp://broker.hivemq.com:1883",
 }
 
 func mqttBrokers() []string {
@@ -116,6 +120,52 @@ func randomSuffix() string {
 	return hex.EncodeToString(b)
 }
 
+func robustMQTTDialer(uri *url.URL, options mqtt.ClientOptions) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	tlsCfg := options.TLSConfig
+	if tlsCfg == nil {
+		tlsCfg = &tls.Config{}
+	} else {
+		tlsCfg = tlsCfg.Clone()
+	}
+	if tlsCfg.ServerName == "" {
+		tlsCfg.ServerName = uri.Hostname()
+	}
+
+	isTLS := uri.Scheme == "ssl" || uri.Scheme == "tls" || uri.Scheme == "tcps"
+
+	// 1. Try dual-stack dial
+	conn, err := d.Dial("tcp", uri.Host)
+	if err == nil {
+		if !isTLS {
+			return conn, nil
+		}
+		tlsConn := tls.Client(conn, tlsCfg)
+		if err = tlsConn.Handshake(); err == nil {
+			return tlsConn, nil
+		}
+		conn.Close()
+	}
+
+	// 2. If dual-stack failed or TLS handshake reset on IPv6, fallback to pure IPv4
+	conn4, err4 := d.Dial("tcp4", uri.Host)
+	if err4 != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, err4
+	}
+	if !isTLS {
+		return conn4, nil
+	}
+	tlsConn4 := tls.Client(conn4, tlsCfg)
+	if err4 = tlsConn4.Handshake(); err4 != nil {
+		conn4.Close()
+		return nil, err4
+	}
+	return tlsConn4, nil
+}
+
 // connect dials the first reachable broker. Subscriptions are (re)created by
 // the OnConnect handler, which also covers automatic reconnects.
 func (c *MQTTClient) connect(ctx context.Context) error {
@@ -136,6 +186,7 @@ func (c *MQTTClient) connect(ctx context.Context) error {
 	opts.SetConnectRetry(true)
 	opts.SetKeepAlive(30 * time.Second)
 	opts.SetConnectTimeout(10 * time.Second)
+	opts.SetCustomOpenConnectionFn(robustMQTTDialer)
 	opts.SetOnConnectHandler(func(cl mqtt.Client) {
 		cl.Subscribe(c.offerTopic(), 1, func(_ mqtt.Client, msg mqtt.Message) {
 			var p mqttOfferPayload
