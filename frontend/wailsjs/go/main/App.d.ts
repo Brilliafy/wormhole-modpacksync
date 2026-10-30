@@ -6,6 +6,8 @@ export function GetNetworkInfo():Promise<models.NetworkInfo>;
 
 export function GetStats():Promise<models.SyncStats>;
 
+export function OpenFolder(arg1:string):Promise<void>;
+
 export function Pause():Promise<void>;
 
 export function Reset():Promise<void>;
@@ -15,8 +17,6 @@ export function Resume():Promise<void>;
 export function ScanFolder(arg1:string):Promise<models.FileTreeNode>;
 
 export function SelectFolder():Promise<string>;
-
-export function OpenFolder(arg1:string):Promise<void>;
 
 export function StartReceiver(arg1:string,arg2:string,arg3:string):Promise<void>;
 
