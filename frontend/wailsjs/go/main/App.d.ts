@@ -16,6 +16,8 @@ export function ScanFolder(arg1:string):Promise<models.FileTreeNode>;
 
 export function SelectFolder():Promise<string>;
 
+export function OpenFolder(arg1:string):Promise<void>;
+
 export function StartReceiver(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function StartSender(arg1:string,arg2:Array<string>,arg3:Array<string>,arg4:string):Promise<models.SenderInitResult>;

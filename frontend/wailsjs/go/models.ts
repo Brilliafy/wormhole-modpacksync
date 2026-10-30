@@ -106,6 +106,7 @@ export namespace models {
 	    code: string;
 	    peerAddress: string;
 	    mirroredFolders?: string[];
+	    savedBytes?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SyncStats(source);
@@ -130,6 +131,7 @@ export namespace models {
 	        this.code = source["code"];
 	        this.peerAddress = source["peerAddress"];
 	        this.mirroredFolders = source["mirroredFolders"];
+	        this.savedBytes = source["savedBytes"];
 	    }
 	}
 

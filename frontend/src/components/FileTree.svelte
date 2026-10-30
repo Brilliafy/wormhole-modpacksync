@@ -12,6 +12,7 @@
 
   let searchQuery = $state("");
   let expandedFolders = $state<Record<string, boolean>>({ "": true });
+  let isMinecraftInstance = $state(false);
 
   // Map of path to checked state
   let checkedMap = $state<Record<string, boolean>>({});
@@ -31,12 +32,26 @@
     }
   }
 
-  // Initialise maps ONLY when a new tree arrives. This effect must never read
-  // checkedMap or absoluteSyncMap: if it did, every user toggle would re-run
-  // it and wipe the selection back to the tree defaults.
+  function detectMinecraft(node: models.FileTreeNode): boolean {
+    if (!node || !node.children) return false;
+    let found = 0;
+    for (const child of node.children) {
+      const lower = child.name.toLowerCase();
+      if (lower === "mods" || lower === "config" || lower === "scripts" || lower === "defaultconfigs") {
+        found++;
+      }
+    }
+    return found >= 1;
+  }
+
+  // Initialise maps ONLY when a new tree arrives.
   $effect(() => {
     if (rootNode) {
       initMaps(rootNode);
+      isMinecraftInstance = detectMinecraft(rootNode);
+      if (isMinecraftInstance) {
+        applyMinecraftPreset();
+      }
       // Auto-expand top level folders (skip ones that were not scanned)
       if (rootNode.children) {
         for (const child of rootNode.children) {
@@ -45,6 +60,32 @@
           }
         }
       }
+    }
+  });
+
+  // Auto-expand folders when searching so matches are immediately visible
+  $effect(() => {
+    if (searchQuery.trim() && rootNode) {
+      const q = searchQuery.toLowerCase().trim();
+      function expandMatching(node: models.FileTreeNode): boolean {
+        let childMatched = false;
+        if (node.children) {
+          for (const child of node.children) {
+            if (expandMatching(child)) {
+              childMatched = true;
+            }
+          }
+        }
+        const selfMatch = node.name.toLowerCase().includes(q);
+        if (childMatched || selfMatch) {
+          if (node.isDir && !node.truncated) {
+            expandedFolders[node.relPath] = true;
+          }
+          return true;
+        }
+        return false;
+      }
+      expandMatching(rootNode);
     }
   });
 
@@ -99,6 +140,26 @@
       }
     }
 
+    if (rootNode) {
+      applyRecursive(rootNode);
+    }
+  }
+
+  function applyConfigsOnlyPreset() {
+    function applyRecursive(node: models.FileTreeNode) {
+      const lower = node.name.toLowerCase();
+      const isTarget = lower === "config" || lower === "scripts" || lower === "defaultconfigs" || lower === "kubejs" ||
+        node.relPath.toLowerCase().startsWith("config/") || node.relPath.toLowerCase().startsWith("scripts/") || node.relPath.toLowerCase().startsWith("defaultconfigs/") || node.relPath.toLowerCase().startsWith("kubejs/");
+      checkedMap[node.relPath] = isTarget;
+      if (node.isDir && node.relPath !== "") {
+        absoluteSyncMap[node.relPath] = (lower === "config" || lower === "defaultconfigs");
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          applyRecursive(child);
+        }
+      }
+    }
     if (rootNode) {
       applyRecursive(rootNode);
     }
@@ -204,16 +265,26 @@
   <!-- Toolbar -->
   <div class="p-2.5 bg-[#17181f] border-b border-[#262731] flex flex-wrap items-center justify-between gap-2">
     <!-- Presets & Bulk Controls -->
-    <div class="flex items-center gap-1.5">
+    <div class="flex flex-wrap items-center gap-1.5">
       <button
         type="button"
         onclick={applyMinecraftPreset}
         class="px-2.5 py-1 rounded-[3px] bg-[#22232c] hover:bg-[#2b2d38] active:translate-y-[1px] border border-[#353746] text-amber-400 text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5"
-        title="Automatically checks mods, config, scripts while deselecting saves, logs, and options"
+        title="Full Modpack: Checks mods, config, scripts, etc. and mirrors mods & config while excluding personal saves/logs"
       >
         <Filter class="w-3 h-3 text-amber-500" />
-        <span>Modpack Preset</span>
+        <span>Full Modpack</span>
       </button>
+
+      <button
+        type="button"
+        onclick={applyConfigsOnlyPreset}
+        class="px-2 py-1 rounded-[3px] bg-[#1a1b22] hover:bg-[#23252f] active:translate-y-[1px] border border-[#2b2d38] text-neutral-300 text-xs transition-colors cursor-pointer flex items-center gap-1"
+        title="Configs & Scripts Only: Checks only config and script files for rapid sync without re-downloading heavy mod jars"
+      >
+        <span>Configs Only</span>
+      </button>
+
       <button
         type="button"
         onclick={() => selectAll(true)}
@@ -228,10 +299,16 @@
       >
         None
       </button>
+
+      {#if isMinecraftInstance}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-[3px] text-[10px] font-medium bg-[#14261d] border border-[#214d34] text-emerald-300">
+          🎮 Modpack Detected
+        </span>
+      {/if}
     </div>
 
     <!-- Search box -->
-    <div class="relative w-44 md:w-52">
+    <div class="relative w-44 md:w-48">
       <Search class="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
       <input
         type="text"
@@ -244,10 +321,10 @@
 
   <!-- Mirror Notice Banner -->
   {#if activeMirroredFolders.length > 0}
-    <div class="px-3 py-1 bg-[#1c1810] border-b border-[#3d3119] flex items-center justify-between text-xs text-amber-300/90">
+    <div class="px-3 py-1.5 bg-[#1c1810] border-b border-[#3d3119] flex items-center justify-between text-xs text-amber-300/90">
       <span class="flex items-center gap-1.5">
         <CopyCheck class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-        <span>Mirroring enabled for: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (extra files in these folders will be deleted)</span>
+        <span>Mirroring active for: <strong class="text-amber-200">{activeMirroredFolders.join(", ")}</strong> (extra/outdated files in these folders will be pruned on peer)</span>
       </span>
     </div>
   {/if}

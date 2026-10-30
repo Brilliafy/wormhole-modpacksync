@@ -30,6 +30,10 @@ export function SelectFolder() {
   return window['go']['main']['App']['SelectFolder']();
 }
 
+export function OpenFolder(arg1) {
+  return window['go']['main']['App']['OpenFolder'](arg1);
+}
+
 export function StartReceiver(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartReceiver'](arg1, arg2, arg3);
 }

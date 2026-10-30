@@ -94,7 +94,7 @@
   <Header
     tailscaleIP={networkInfo?.tailscaleIP}
     networkMode={networkMode}
-    onToggleNetworkMode={handleToggleNetworkMode}
+    onSelectNetworkMode={(mode) => (networkMode = mode)}
     canReset={currentView !== "mode_select"}
     onReset={handleReset}
   />
