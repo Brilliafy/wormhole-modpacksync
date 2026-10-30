@@ -10,6 +10,10 @@ export function GetStats() {
   return window['go']['main']['App']['GetStats']();
 }
 
+export function OpenFolder(arg1) {
+  return window['go']['main']['App']['OpenFolder'](arg1);
+}
+
 export function Pause() {
   return window['go']['main']['App']['Pause']();
 }
@@ -28,10 +32,6 @@ export function ScanFolder(arg1) {
 
 export function SelectFolder() {
   return window['go']['main']['App']['SelectFolder']();
-}
-
-export function OpenFolder(arg1) {
-  return window['go']['main']['App']['OpenFolder'](arg1);
 }
 
 export function StartReceiver(arg1, arg2, arg3) {
